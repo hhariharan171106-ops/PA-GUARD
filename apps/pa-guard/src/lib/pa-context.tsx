@@ -2,10 +2,10 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { paApi, type SettingsHistoryItem, type SlaRun, type SlaSettings } from '@/lib/pa-api';
-import type { AuditEvent, CaseStatus, Document, PaCase } from '@/lib/pa-data';
+import { initialCases, initialDocuments, type AuditEvent, type CaseStatus, type Document, type PaCase } from '@/lib/pa-data';
 
 type NewCase = Pick<PaCase, 'patientReference' | 'payer' | 'service' | 'deadline' | 'coordinator'>;
-type PaContextValue = { cases: PaCase[]; documents: Document[]; audit: AuditEvent[]; settings: SlaSettings; settingsHistory: SettingsHistoryItem[]; slaRun: SlaRun | null; isRunningSla: boolean; isLoading: boolean; apiError: string | null; addCase: (item: NewCase) => Promise<void>; updateCase: (id: string, status: CaseStatus, coordinator: string) => Promise<void>; verifyDocument: (id: number) => Promise<void>; escalate: (caseId: string, detail: string) => Promise<void>; setSettings: (settings: SlaSettings) => Promise<void>; runSlaAgent: () => Promise<void> };
+type PaContextValue = { cases: PaCase[]; documents: Document[]; audit: AuditEvent[]; settings: SlaSettings; settingsHistory: SettingsHistoryItem[]; slaRun: SlaRun | null; isRunningSla: boolean; isLoading: boolean; isOfflineDemo: boolean; apiError: string | null; addCase: (item: NewCase) => Promise<void>; updateCase: (id: string, status: CaseStatus, coordinator: string) => Promise<void>; verifyDocument: (id: number) => Promise<void>; escalate: (caseId: string, detail: string) => Promise<void>; setSettings: (settings: SlaSettings) => Promise<void>; runSlaAgent: () => Promise<void> };
 const PaContext = createContext<PaContextValue | null>(null);
 
 export function PaProvider({ children }: { children: ReactNode }) {
@@ -21,9 +21,10 @@ export function PaProvider({ children }: { children: ReactNode }) {
   const run = async (action: () => Promise<void>, message: string) => { await mutation.mutateAsync(action); toast.success(message); };
   const errors = [casesQuery.error, documentsQuery.error, auditQuery.error, settingsQuery.error, settingsHistoryQuery.error].filter((error: Error | null) => Boolean(error));
   const apiError = errors[0] instanceof Error ? errors[0].message : null;
+  const isOfflineDemo = Boolean(apiError);
   return <PaContext.Provider value={{
-    cases: casesQuery.data ?? [], documents: documentsQuery.data ?? [], audit: auditQuery.data ?? [], settingsHistory: settingsHistoryQuery.data ?? [], settings: settingsQuery.data ?? { warningHours: 24, urgentHours: 8, escalationOneHours: 4, escalationTwoHours: 0, remainingTimeWeight: 60, priorityWeight: 20, evidenceWeight: 20 },
-    slaRun: slaMutation.data ?? null, isRunningSla: slaMutation.isPending, isLoading: casesQuery.isLoading || documentsQuery.isLoading || auditQuery.isLoading || settingsQuery.isLoading || settingsHistoryQuery.isLoading, apiError,
+    cases: casesQuery.data ?? (isOfflineDemo ? initialCases : []), documents: documentsQuery.data ?? (isOfflineDemo ? initialDocuments : []), audit: auditQuery.data ?? [], settingsHistory: settingsHistoryQuery.data ?? [], settings: settingsQuery.data ?? { warningHours: 24, urgentHours: 8, escalationOneHours: 4, escalationTwoHours: 0, remainingTimeWeight: 60, priorityWeight: 20, evidenceWeight: 20 },
+    slaRun: slaMutation.data ?? null, isRunningSla: slaMutation.isPending, isLoading: !isOfflineDemo && (casesQuery.isLoading || documentsQuery.isLoading || auditQuery.isLoading || settingsQuery.isLoading || settingsHistoryQuery.isLoading), isOfflineDemo, apiError,
     addCase: async (item: NewCase) => run(async () => { await paApi.createCase(item); }, 'Case created and saved'),
     updateCase: async (id: string, status: CaseStatus, coordinator: string) => run(async () => { await paApi.updateCase(id, status, coordinator); }, 'Case updated and audited'),
     verifyDocument: async (id: number) => run(async () => { await paApi.verifyDocument(id); }, 'Document verified and audited'),
