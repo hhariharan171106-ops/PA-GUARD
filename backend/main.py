@@ -313,6 +313,12 @@ def create_payer_requirement(payload: RequirementCreate) -> dict:
     values = payload.model_dump()
     required = ("requirement_id","document_type","title","payer","service_type","content","source_reference","effective_date","version")
     if not all(str(values[field]).strip() for field in required) or not values["required_documents"]:
+@app.get("/api/role-assignments/history")
+def list_role_assignment_history() -> list[dict]:
+    with connect() as db:
+        return [dict(row) for row in db.execute("SELECT id,assignment_id,changed_at,actor,action,previous_values,new_values FROM role_assignment_history ORDER BY changed_at DESC,id DESC LIMIT 200")]
+
+
 @app.get("/api/role-assignments")
 def list_role_assignments() -> list[dict]:
     with connect() as db:
@@ -323,9 +329,11 @@ def list_role_assignments() -> list[dict]:
 def create_role_assignment(payload: RoleAssignmentCreate) -> dict:
     values = payload.model_dump()
     validate_role_assignment(values)
+    changed_at = datetime.now(timezone.utc).isoformat()
     with connect() as db:
         cursor = db.execute("INSERT INTO escalation_role_assignments(escalation_level,responsible_role,department,effective_date,expires_at) VALUES(?,?,?,?,?)", (values["escalation_level"], values["responsible_role"], values["department"], values["effective_date"], values["expires_at"]))
         result = dict(db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (cursor.lastrowid,)).fetchone())
+        db.execute("INSERT INTO role_assignment_history(assignment_id,changed_at,actor,action,previous_values,new_values) VALUES(?,?,?,?,?,?)", (result["id"], changed_at, "Current user", "CREATED", None, json.dumps(result)))
     audit("SYSTEM", "Current user", "ROLE_ASSIGNMENT_CREATED", f"Assigned {values['responsible_role']} to {values['escalation_level']} for {values['department']} effective {values['effective_date']}.", "HUMAN_OPERATIONAL_DECISION")
     return result
 
@@ -334,12 +342,16 @@ def create_role_assignment(payload: RoleAssignmentCreate) -> dict:
 def update_role_assignment(assignment_id: int, payload: RoleAssignmentUpdate) -> dict:
     values = payload.model_dump()
     with connect() as db:
-        if not db.execute("SELECT id FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone():
+        existing = db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone()
+        if not existing:
             raise HTTPException(404, "Role assignment not found")
+        previous = dict(existing)
     validate_role_assignment(values, assignment_id)
+    changed_at = datetime.now(timezone.utc).isoformat()
     with connect() as db:
         db.execute("UPDATE escalation_role_assignments SET escalation_level=?,responsible_role=?,department=?,effective_date=?,expires_at=? WHERE id=?", (values["escalation_level"], values["responsible_role"], values["department"], values["effective_date"], values["expires_at"], assignment_id))
         result = dict(db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone())
+        db.execute("INSERT INTO role_assignment_history(assignment_id,changed_at,actor,action,previous_values,new_values) VALUES(?,?,?,?,?,?)", (assignment_id, changed_at, "Current user", "UPDATED", json.dumps(previous), json.dumps(result)))
     audit("SYSTEM", "Current user", "ROLE_ASSIGNMENT_UPDATED", f"Updated role assignment {assignment_id} for {values['department']}.", "HUMAN_OPERATIONAL_DECISION")
     return result
 
@@ -347,6 +359,7 @@ def update_role_assignment(assignment_id: int, payload: RoleAssignmentUpdate) ->
 @app.post("/api/role-assignments/{assignment_id}/retire")
 def retire_role_assignment(assignment_id: int) -> dict:
     retired_on = date.today().isoformat()
+    changed_at = datetime.now(timezone.utc).isoformat()
     with connect() as db:
         assignment = db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone()
         if not assignment:
@@ -355,8 +368,10 @@ def retire_role_assignment(assignment_id: int) -> dict:
             raise HTTPException(409, "Role assignment is already retired")
         if assignment["effective_date"] > retired_on:
             raise HTTPException(409, "Future assignments must be edited rather than retired")
+        previous = dict(assignment)
         db.execute("UPDATE escalation_role_assignments SET expires_at=? WHERE id=?", (retired_on, assignment_id))
         result = dict(db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone())
+        db.execute("INSERT INTO role_assignment_history(assignment_id,changed_at,actor,action,previous_values,new_values) VALUES(?,?,?,?,?,?)", (assignment_id, changed_at, "Current user", "RETIRED", json.dumps(previous), json.dumps(result)))
     audit("SYSTEM", "Current user", "ROLE_ASSIGNMENT_RETIRED", f"Retired role assignment {assignment_id} on {retired_on}.", "HUMAN_OPERATIONAL_DECISION")
     return result
 
