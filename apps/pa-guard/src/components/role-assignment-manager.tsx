@@ -58,6 +58,9 @@ export function RoleAssignmentManager() {
     if (!retiring) return;
     setBusy(true);
     try { await paApi.retireRoleAssignment(retiring.id); toast.success('Role assignment retired.'); setRetiring(null); await load(); }
+    catch (error: unknown) { toast.error(error instanceof Error ? error.message : 'Unable to retire role assignment'); }
+    finally { setBusy(false); }
+  };
   const filteredHistory = useMemo(() => {
     const query = historySearch.trim().toLocaleLowerCase();
     return history.filter((item: RoleAssignmentHistoryItem) => {
@@ -69,9 +72,6 @@ export function RoleAssignmentManager() {
   }, [history, historyAction, historyLevel, historySearch]);
   const hasHistoryFilters = Boolean(historySearch) || historyAction !== 'all' || historyLevel !== 'all';
   const clearHistoryFilters = () => { setHistorySearch(''); setHistoryAction('all'); setHistoryLevel('all'); };
-    catch (error: unknown) { toast.error(error instanceof Error ? error.message : 'Unable to retire role assignment'); }
-    finally { setBusy(false); }
-  };
 
   return <>
     <Card>
