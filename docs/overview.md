@@ -24,3 +24,5 @@ The Escalation Agent uses a LangGraph RAG workflow to retrieve current approved 
 Escalation policy management provides dedicated, department-aware draft, approval, retirement, and immutable version workflows for escalation rules, role responsibilities, and notification procedures. Every lifecycle action is audited and approved versions are indexed for Escalation Agent retrieval.
 
 Role assignment management lets operations managers create, edit, review, and retire effective-dated escalation ownership from the Escalation policies workspace. Conflict checks prevent overlapping recipients for the same department and escalation level, preserving deterministic routing. A change history records each create, update, and retirement with actor, timestamp, and before/after values.
+
+The Recovery Agent appears on the operations dashboard and uses LangGraph to detect workflow failures, retrieve current approved troubleshooting and retry procedures, apply deterministic retry limits, request approval where required, verify outcomes, and create manual follow-up tasks when safe automated recovery is unavailable.
