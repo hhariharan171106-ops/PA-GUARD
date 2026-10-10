@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from agents import run_sla_agent, run_sla_rag
 from evidence_agents import run_evidence_rag
 from escalation_agents import run_escalation_rag
+from recovery_agents import run_recovery_rag
 from database import connect, initialize
 from rag import index_policies
 
@@ -35,6 +36,11 @@ class HumanAction(BaseModel):
 
 class AgentRun(BaseModel):
     approve_notification: bool = False
+
+class RecoveryRun(BaseModel):
+    actor: str
+    error_code: str | None = None
+    approve_recovery: bool = False
     actor: str
 
 class SlaSettingsUpdate(BaseModel):
@@ -264,6 +270,21 @@ def evaluate_escalation(case_id: str, payload: AgentRun) -> dict:
     try:
         result = run_escalation_rag(case_id, payload.actor, payload.approve_notification)
         return {"mode": "recommendation_only", "engine": "LangGraph RAG + deterministic Python rules + local Ollama explanation", "decision": result}
+@app.get("/api/workflow-failures")
+def list_workflow_failures() -> list[dict]:
+    with connect() as db:
+        return [dict(row) for row in db.execute("SELECT * FROM workflow_failures ORDER BY occurred_at DESC")]
+
+
+@app.post("/api/agents/recovery/cases/{case_id}/recover")
+def recover_case(case_id: str, payload: RecoveryRun) -> dict:
+    try:
+        result = run_recovery_rag(case_id, payload.actor, payload.error_code, payload.approve_recovery)
+        return {"mode": "guarded_recovery", "engine": "LangGraph RAG + deterministic safety checks + local Ollama embeddings", "recovery": result}
+    except ValueError as error:
+        raise HTTPException(404, str(error)) from error
+
+
     except ValueError as error:
         raise HTTPException(404, str(error)) from error
 
