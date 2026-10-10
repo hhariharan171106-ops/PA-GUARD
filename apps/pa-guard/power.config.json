@@ -1,0 +1,10 @@
+{
+  "appDisplayName": "PA Guard",
+  "description": "Healthcare prior authorization operations prototype with case, evidence, SLA, escalation, and audit management.",
+  "buildPath": "./dist",
+  "buildEntryPoint": "index.html",
+  "logoPath": "Default",
+  "localAppUrl": "http://localhost:5173/",
+  "connectionReferences": {},
+  "databaseReferences": {}
+}
