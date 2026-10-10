@@ -1,5 +1,5 @@
-import { useEffect, useState, type ChangeEvent } from 'react';
-import { History, Pencil, Plus, UserRoundCog } from 'lucide-react';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
+import { History, Pencil, Plus, Search, UserRoundCog, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -28,6 +28,9 @@ export function RoleAssignmentManager() {
   const [retiring, setRetiring] = useState<RoleAssignment | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyAction, setHistoryAction] = useState<'all' | RoleAssignmentHistoryItem['action']>('all');
+  const [historyLevel, setHistoryLevel] = useState<'all' | RoleAssignment['escalationLevel']>('all');
 
   const load = async () => {
     try {
@@ -55,6 +58,17 @@ export function RoleAssignmentManager() {
     if (!retiring) return;
     setBusy(true);
     try { await paApi.retireRoleAssignment(retiring.id); toast.success('Role assignment retired.'); setRetiring(null); await load(); }
+  const filteredHistory = useMemo(() => {
+    const query = historySearch.trim().toLocaleLowerCase();
+    return history.filter((item: RoleAssignmentHistoryItem) => {
+      const matchesSearch = !query || [item.actor, item.newValues.responsibleRole, item.newValues.department].some((value: string) => value.toLocaleLowerCase().includes(query));
+      const matchesAction = historyAction === 'all' || item.action === historyAction;
+      const matchesLevel = historyLevel === 'all' || item.newValues.escalationLevel === historyLevel;
+      return matchesSearch && matchesAction && matchesLevel;
+    });
+  }, [history, historyAction, historyLevel, historySearch]);
+  const hasHistoryFilters = Boolean(historySearch) || historyAction !== 'all' || historyLevel !== 'all';
+  const clearHistoryFilters = () => { setHistorySearch(''); setHistoryAction('all'); setHistoryLevel('all'); };
     catch (error: unknown) { toast.error(error instanceof Error ? error.message : 'Unable to retire role assignment'); }
     finally { setBusy(false); }
   };
@@ -73,12 +87,20 @@ export function RoleAssignmentManager() {
         <CardDescription>Review who changed routing ownership, when it changed, and the values before and after each action.</CardDescription>
       </CardHeader>
       <CardContent>
+        <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px_180px_auto]">
+          <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input aria-label="Search assignment history" className="pl-9" placeholder="Search role, department, or actor" value={historySearch} onChange={(event: ChangeEvent<HTMLInputElement>) => setHistorySearch(event.target.value)} /></div>
+          <Select value={historyAction} onValueChange={(value: 'all' | RoleAssignmentHistoryItem['action']) => setHistoryAction(value)}><SelectTrigger aria-label="Filter by action"><SelectValue placeholder="All actions" /></SelectTrigger><SelectContent><SelectItem value="all">All actions</SelectItem><SelectItem value="CREATED">Created</SelectItem><SelectItem value="UPDATED">Updated</SelectItem><SelectItem value="RETIRED">Retired</SelectItem></SelectContent></Select>
+          <Select value={historyLevel} onValueChange={(value: 'all' | RoleAssignment['escalationLevel']) => setHistoryLevel(value)}><SelectTrigger aria-label="Filter by escalation level"><SelectValue placeholder="All levels" /></SelectTrigger><SelectContent><SelectItem value="all">All levels</SelectItem><SelectItem value="LEVEL_1">Level 1</SelectItem><SelectItem value="LEVEL_2">Level 2</SelectItem></SelectContent></Select>
+          <Button variant="outline" onClick={clearHistoryFilters} disabled={!hasHistoryFilters}><X className="size-4" />Clear</Button>
+        </div>
+        <div className="mb-3 text-sm text-muted-foreground">Showing {filteredHistory.length} of {history.length} changes</div>
         <div className="space-y-3">
-          {history.map((item: RoleAssignmentHistoryItem) => {
+          {filteredHistory.map((item: RoleAssignmentHistoryItem) => {
             const changedFields = item.previousValues ? (['responsibleRole', 'department', 'escalationLevel', 'effectiveDate', 'expiresAt'] as const).filter((field: keyof RoleAssignment) => item.previousValues?.[field] !== item.newValues[field]) : [];
             return <div key={item.id} className="rounded-lg border bg-card p-4 text-card-foreground"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><Badge variant={item.action === 'RETIRED' ? 'secondary' : 'outline'}>{item.action}</Badge><span className="font-medium">{item.newValues.responsibleRole}</span></div><span className="text-sm text-muted-foreground">{item.changedAt} · {item.actor}</span></div><p className="mt-2 text-sm">{item.newValues.escalationLevel.replace('_', ' ')} · {item.newValues.department} · {item.newValues.effectiveDate} – {item.newValues.expiresAt ?? 'Ongoing'}</p>{changedFields.length > 0 && <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">{changedFields.map((field: keyof RoleAssignment) => <div key={field} className="rounded-md bg-muted p-2 text-muted-foreground"><span className="font-medium text-foreground">{field.replace(/([A-Z])/g, ' $1')}:</span> {String(item.previousValues?.[field] ?? 'None')} → {String(item.newValues[field] ?? 'None')}</div>)}</div>}</div>;
           })}
           {history.length === 0 && <div className="bg-muted p-8 text-center text-muted-foreground"><History className="mx-auto mb-2 size-6" />No assignment changes recorded yet.</div>}
+          {history.length > 0 && filteredHistory.length === 0 && <div className="bg-muted p-8 text-center text-muted-foreground"><Search className="mx-auto mb-2 size-6" /><p>No assignment changes match these filters.</p><Button className="mt-3" variant="outline" onClick={clearHistoryFilters}>Clear filters</Button></div>}
         </div>
       </CardContent>
     </Card>
