@@ -1,5 +1,5 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
-import { Pencil, Plus, UserRoundCog } from 'lucide-react';
+import { History, Pencil, Plus, UserRoundCog } from 'lucide-react';
 import { toast } from 'sonner';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { paApi, type RoleAssignment, type RoleAssignmentPayload } from '@/lib/pa-api';
+import { paApi, type RoleAssignment, type RoleAssignmentHistoryItem, type RoleAssignmentPayload } from '@/lib/pa-api';
 
 const emptyAssignment: RoleAssignmentPayload = { escalationLevel: 'LEVEL_1', responsibleRole: '', department: 'Prior Authorization', effectiveDate: '', expiresAt: null };
 
@@ -22,6 +22,7 @@ const getStatus = (assignment: RoleAssignment): 'Scheduled' | 'Active' | 'Retire
 
 export function RoleAssignmentManager() {
   const [assignments, setAssignments] = useState<RoleAssignment[]>([]);
+  const [history, setHistory] = useState<RoleAssignmentHistoryItem[]>([]);
   const [draft, setDraft] = useState<RoleAssignmentPayload>(emptyAssignment);
   const [editing, setEditing] = useState<RoleAssignment | null>(null);
   const [retiring, setRetiring] = useState<RoleAssignment | null>(null);
@@ -29,8 +30,11 @@ export function RoleAssignmentManager() {
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
-    try { setAssignments(await paApi.getRoleAssignments()); }
-    catch (error: unknown) { toast.error(error instanceof Error ? error.message : 'Unable to load role assignments'); }
+    try {
+      const [assignmentItems, historyItems] = await Promise.all([paApi.getRoleAssignments(), paApi.getRoleAssignmentHistory()]);
+      setAssignments(assignmentItems);
+      setHistory(historyItems);
+    } catch (error: unknown) { toast.error(error instanceof Error ? error.message : 'Unable to load role assignments'); }
   };
   useEffect(() => { void load(); }, []);
 
@@ -63,6 +67,21 @@ export function RoleAssignmentManager() {
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="pb-3">Level</th><th className="pb-3">Responsible role</th><th className="pb-3">Department</th><th className="pb-3">Effective period</th><th className="pb-3">Status</th><th className="pb-3 text-right">Actions</th></tr></thead><tbody>
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><History className="size-5" />Assignment change history</CardTitle>
+        <CardDescription>Review who changed routing ownership, when it changed, and the values before and after each action.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          {history.map((item: RoleAssignmentHistoryItem) => {
+            const changedFields = item.previousValues ? (['responsibleRole', 'department', 'escalationLevel', 'effectiveDate', 'expiresAt'] as const).filter((field: keyof RoleAssignment) => item.previousValues?.[field] !== item.newValues[field]) : [];
+            return <div key={item.id} className="rounded-lg border bg-card p-4 text-card-foreground"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><Badge variant={item.action === 'RETIRED' ? 'secondary' : 'outline'}>{item.action}</Badge><span className="font-medium">{item.newValues.responsibleRole}</span></div><span className="text-sm text-muted-foreground">{item.changedAt} · {item.actor}</span></div><p className="mt-2 text-sm">{item.newValues.escalationLevel.replace('_', ' ')} · {item.newValues.department} · {item.newValues.effectiveDate} – {item.newValues.expiresAt ?? 'Ongoing'}</p>{changedFields.length > 0 && <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">{changedFields.map((field: keyof RoleAssignment) => <div key={field} className="rounded-md bg-muted p-2 text-muted-foreground"><span className="font-medium text-foreground">{field.replace(/([A-Z])/g, ' $1')}:</span> {String(item.previousValues?.[field] ?? 'None')} → {String(item.newValues[field] ?? 'None')}</div>)}</div>}</div>;
+          })}
+          {history.length === 0 && <div className="bg-muted p-8 text-center text-muted-foreground"><History className="mx-auto mb-2 size-6" />No assignment changes recorded yet.</div>}
+        </div>
+      </CardContent>
+    </Card>
           {assignments.map((assignment: RoleAssignment) => { const status = getStatus(assignment); return <tr key={assignment.id} className="border-b last:border-0"><td className="py-3 pr-4"><Badge variant="outline">{assignment.escalationLevel.replace('_', ' ')}</Badge></td><td className="py-3 pr-4 font-medium">{assignment.responsibleRole}</td><td className="py-3 pr-4">{assignment.department}</td><td className="py-3 pr-4">{assignment.effectiveDate} – {assignment.expiresAt ?? 'Ongoing'}</td><td className="py-3 pr-4"><Badge variant={status === 'Active' ? 'default' : 'secondary'}>{status}</Badge></td><td className="py-3"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => openEdit(assignment)}><Pencil className="size-4" />Edit</Button>{status === 'Active' && <Button size="sm" variant="destructive" onClick={() => setRetiring(assignment)}>Retire</Button>}</div></td></tr>; })}
         </tbody></table>{assignments.length === 0 && <div className="bg-muted p-8 text-center text-muted-foreground"><UserRoundCog className="mx-auto mb-2 size-6" />No role assignments configured.</div>}</div>
       </CardContent>
