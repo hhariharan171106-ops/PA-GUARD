@@ -1,6 +1,9 @@
 import type { AuditEvent, CaseStatus, Document, PaCase } from '@/lib/pa-data';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const configuredApiUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
+const isLocalPreview = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
+export const isPaApiConfigured = Boolean(configuredApiUrl) || isLocalPreview;
+const API_BASE_URL = configuredApiUrl ?? 'http://localhost:8000';
 
 type ApiCase = { id: string; patient_reference: string; payer: string; service: string; submission_date: string; deadline: string; status: CaseStatus; risk: PaCase['risk']; coordinator: string; priority: PaCase['priority'] };
 type ApiDocument = { id: number; case_id: string; name: string; status: Document['status'] };
@@ -39,7 +42,13 @@ const mapDocument = (item: ApiDocument): Document => ({ id: item.id, caseId: ite
 const mapAudit = (item: ApiAudit): AuditEvent => ({ id: item.id, caseId: item.case_id, timestamp: new Date(item.timestamp).toLocaleString(), actor: item.actor, action: item.action.replaceAll('_', ' '), detail: item.detail, decisionType: item.decision_type.replaceAll('_', ' ') });
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } });
+  if (!isPaApiConfigured) throw new Error('PA Guard API is not configured for this environment');
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } });
+  } catch {
+    throw new Error('PA Guard API is unavailable');
+  }
   if (!response.ok) {
     const body = await response.json().catch((): { detail?: string } => ({})) as { detail?: string };
     throw new Error(body.detail ?? `API request failed (${response.status})`);
