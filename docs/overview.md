@@ -22,3 +22,5 @@ Payer requirement management provides human-controlled draft, approval, retireme
 The Escalation Agent uses a LangGraph RAG workflow to retrieve current approved escalation policies, apply configured thresholds deterministically, select the responsible role, suppress duplicate notifications, and record cited recommendations. Notifications remain explicitly simulated and require human approval.
 
 Escalation policy management provides dedicated, department-aware draft, approval, retirement, and immutable version workflows for escalation rules, role responsibilities, and notification procedures. Every lifecycle action is audited and approved versions are indexed for Escalation Agent retrieval.
+
+Role assignment management lets operations managers create, edit, review, and retire effective-dated escalation ownership from the Escalation policies workspace. Conflict checks prevent overlapping recipients for the same department and escalation level, preserving deterministic routing.
