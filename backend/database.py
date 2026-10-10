@@ -42,11 +42,11 @@ def initialize() -> None:
                 ("PA-1038","PT-FX-1630","Harbor Mutual","Physical therapy","2026-10-03","2026-10-09T17:00:00+00:00","APPROVED","COMPLETE","Jordan Lee","LOW")])
             db.executemany("INSERT INTO documents(case_id,name,status) VALUES(?,?,?)", [("PA-1042","Clinical notes","RECEIVED"),("PA-1042","Conservative treatment history","NEEDS REVIEW"),("PA-1041","Infusion order","RECEIVED"),("PA-1041","Lab results","MISSING"),("PA-1039","Specialist letter","MISSING")])
         if db.execute("SELECT COUNT(*) AS count FROM sla_settings").fetchone()["count"] == 0:
+            db.execute("INSERT INTO sla_settings VALUES(1,24,8,4,0,60,20,20)")
         if db.execute("SELECT COUNT(*) AS count FROM escalation_role_assignments").fetchone()["count"] == 0:
             db.executemany("INSERT INTO escalation_role_assignments(escalation_level,responsible_role,department,effective_date,expires_at) VALUES(?,?,?,?,?)", [
                 ("LEVEL_1", "Prior Authorization Supervisor", "Prior Authorization", "2026-01-01", None),
                 ("LEVEL_2", "SLA Manager", "Prior Authorization", "2026-01-01", None)])
-            db.execute("INSERT INTO sla_settings VALUES(1,24,8,4,0,60,20,20)")
         if not db.execute("SELECT id FROM policy_documents WHERE policy_id='EVD-NS-MRI'").fetchone():
             db.executemany("INSERT INTO policy_documents(policy_id,document_type,title,content,effective_date,expires_at,version,approved,payer,service_type,source_reference,required_documents) VALUES(?,?,?,?,?,?,?,1,?,?,?,?)", [
                 ("EVD-NS-MRI","PAYER_REQUIREMENT","Northstar lumbar MRI requirements","For lumbar MRI authorization, obtain clinical notes and conservative treatment history. Received documents remain unverified until reviewed by qualified staff.","2026-01-01",None,"1.0","Northstar Health","Lumbar MRI","Northstar fictional provider manual §4.2",'["Clinical notes", "Conservative treatment history"]'),
