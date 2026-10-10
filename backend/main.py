@@ -10,7 +10,13 @@ from database import connect, initialize
 from rag import index_policies
 
 app = FastAPI(title="PA Guard API", version="0.3.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origin_regex=r"https?://.*",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class CaseCreate(BaseModel):
     patient_reference: str
@@ -114,6 +120,10 @@ class EscalationPolicyUpdate(BaseModel):
 def audit(case_id: str, actor: str, action: str, detail: str, decision_type: str="HUMAN") -> None:
     with connect() as db:
         db.execute("INSERT INTO audit_events(case_id,timestamp,actor,action,detail,decision_type) VALUES(?,?,?,?,?,?)", (case_id,datetime.now(timezone.utc).isoformat(),actor,action,detail,decision_type))
+@app.get("/api/health")
+def health() -> dict:
+    return {"status": "ok", "service": "PA Guard API"}
+
 
 @app.on_event("startup")
 def startup() -> None:
@@ -203,6 +213,7 @@ def reindex_policies(payload: AgentRun) -> dict:
     return result
 
 @app.post("/api/agents/sla/cases/{case_id}/recommend")
+
 def recommend_case(case_id: str, payload: AgentRun) -> dict:
     try: return run_sla_rag(case_id)
     except ValueError as error: raise HTTPException(404,str(error)) from error
@@ -287,8 +298,21 @@ def create_payer_requirement(payload: RequirementCreate) -> dict:
 
 @app.put("/api/payer-requirements/{requirement_id}/{version}")
 def update_payer_requirement(requirement_id: str, version: str, payload: RequirementUpdate) -> dict:
-    values=payload.model_dump()
-    documents=[item.strip() for item in values["required_documents"] if item.strip()]
+    values = payload.model_dump()
+    documents = [item.strip() for item in values["required_documents"] if item.strip()]
+    if not documents:
+        raise HTTPException(400, "Add at least one required document")
+    with connect() as db:
+        existing = db.execute("SELECT * FROM policy_documents WHERE policy_id=? AND version=?", (requirement_id, version)).fetchone()
+        if not existing:
+            raise HTTPException(404, "Payer requirement not found")
+        if existing["approved"]:
+            raise HTTPException(409, "Approved requirement versions are immutable; create a new version")
+        db.execute("UPDATE policy_documents SET document_type=?,title=?,payer=?,service_type=?,required_documents=?,content=?,source_reference=?,effective_date=?,expires_at=?,version=?,embedding=NULL,embedding_engine=NULL WHERE policy_id=? AND version=?", (values["document_type"], values["title"], values["payer"], values["service_type"], json.dumps(documents), values["content"], values["source_reference"], values["effective_date"], values["expires_at"], values["version"], requirement_id, version))
+        result = dict(db.execute("SELECT policy_id AS requirement_id,document_type,title,content,effective_date,expires_at,version,approved,embedding_engine,payer,service_type,source_reference,required_documents FROM policy_documents WHERE policy_id=? AND version=?", (requirement_id, values["version"])).fetchone())
+    audit("SYSTEM", "Current user", "PAYER_REQUIREMENT_UPDATED", f"Updated draft {requirement_id} v{version}.", "HUMAN_OPERATIONAL_DECISION")
+    return result
+
 @app.get("/api/escalation-policies")
 def list_escalation_policies() -> list[dict]:
     with connect() as db:
@@ -342,15 +366,7 @@ def set_escalation_policy_approval(policy_id: str, version: str, payload: Policy
     return {"ok": True, "approved": payload.approved, "index": result}
 
 
-    if not documents: raise HTTPException(400,"Add at least one required document")
-    with connect() as db:
-        existing=db.execute("SELECT * FROM policy_documents WHERE policy_id=? AND version=?",(requirement_id,version)).fetchone()
-        if not existing: raise HTTPException(404,"Payer requirement not found")
-        if existing["approved"]: raise HTTPException(409,"Approved requirement versions are immutable; create a new version")
-        db.execute("UPDATE policy_documents SET document_type=?,title=?,payer=?,service_type=?,required_documents=?,content=?,source_reference=?,effective_date=?,expires_at=?,version=?,embedding=NULL,embedding_engine=NULL WHERE policy_id=? AND version=?",(values["document_type"],values["title"],values["payer"],values["service_type"],json.dumps(documents),values["content"],values["source_reference"],values["effective_date"],values["expires_at"],values["version"],requirement_id,version))
-        result=dict(db.execute("SELECT policy_id AS requirement_id,document_type,title,content,effective_date,expires_at,version,approved,embedding_engine,payer,service_type,source_reference,required_documents FROM policy_documents WHERE policy_id=? AND version=?",(requirement_id,values["version"])).fetchone())
-    audit("SYSTEM","Current user","PAYER_REQUIREMENT_UPDATED",f"Updated draft {requirement_id} v{version}.","HUMAN_OPERATIONAL_DECISION")
-    return result
+
 
 @app.post("/api/payer-requirements/{requirement_id}/{version}/approval")
 def set_requirement_approval(requirement_id: str, version: str, payload: PolicyApproval) -> dict:

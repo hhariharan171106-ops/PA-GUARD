@@ -25,15 +25,13 @@ def initialize() -> None:
         CREATE TABLE IF NOT EXISTS escalation_recommendations (id INTEGER PRIMARY KEY AUTOINCREMENT, case_id TEXT NOT NULL, created_at TEXT NOT NULL, escalation_required INTEGER NOT NULL, escalation_level TEXT NOT NULL, reason TEXT NOT NULL, responsible_role TEXT NOT NULL, recommended_action TEXT NOT NULL, approval_required INTEGER NOT NULL, source_references TEXT NOT NULL, notification_status TEXT NOT NULL, actor TEXT NOT NULL);
         """)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(sla_settings)")}
-        for name, default in (("remaining_time_weight",60),("priority_weight",20),("evidence_weight",20)):
+        for name, default in (("remaining_time_weight", 60), ("priority_weight", 20), ("evidence_weight", 20)):
             if name not in columns:
+                db.execute(f"ALTER TABLE sla_settings ADD COLUMN {name} INTEGER NOT NULL DEFAULT {default}")
         policy_columns = {row["name"] for row in db.execute("PRAGMA table_info(policy_documents)")}
         for name in ("payer", "service_type", "source_reference", "required_documents", "department"):
             if name not in policy_columns:
                 db.execute(f"ALTER TABLE policy_documents ADD COLUMN {name} TEXT")
-        for name, default in (("remaining_time_weight",60),("priority_weight",20),("evidence_weight",20)):
-            if name not in columns:
-                db.execute(f"ALTER TABLE sla_settings ADD COLUMN {name} INTEGER NOT NULL DEFAULT {default}")
         if db.execute("SELECT COUNT(*) AS count FROM cases").fetchone()["count"] == 0:
             db.executemany("INSERT INTO cases VALUES (?,?,?,?,?,?,?,?,?,?)", [
                 ("PA-1042","PT-FX-2048","Northstar Health","Lumbar MRI","2026-10-08","2026-10-10T14:30:00+00:00","PAYER PENDING","AT RISK","Maya Chen","HIGH"),
