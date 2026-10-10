@@ -25,6 +25,9 @@ def initialize() -> None:
         CREATE TABLE IF NOT EXISTS escalation_recommendations (id INTEGER PRIMARY KEY AUTOINCREMENT, case_id TEXT NOT NULL, created_at TEXT NOT NULL, escalation_required INTEGER NOT NULL, escalation_level TEXT NOT NULL, reason TEXT NOT NULL, responsible_role TEXT NOT NULL, recommended_action TEXT NOT NULL, approval_required INTEGER NOT NULL, source_references TEXT NOT NULL, notification_status TEXT NOT NULL, actor TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS escalation_role_assignments (id INTEGER PRIMARY KEY AUTOINCREMENT, escalation_level TEXT NOT NULL, responsible_role TEXT NOT NULL, department TEXT NOT NULL, effective_date TEXT NOT NULL, expires_at TEXT, UNIQUE(escalation_level,department,effective_date));
         CREATE TABLE IF NOT EXISTS role_assignment_history (id INTEGER PRIMARY KEY AUTOINCREMENT, assignment_id INTEGER NOT NULL, changed_at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, previous_values TEXT, new_values TEXT, FOREIGN KEY(assignment_id) REFERENCES escalation_role_assignments(id));
+        CREATE TABLE IF NOT EXISTS workflow_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, case_id TEXT NOT NULL, occurred_at TEXT NOT NULL, error_code TEXT NOT NULL, error_details TEXT NOT NULL, workflow_state TEXT NOT NULL, FOREIGN KEY(case_id) REFERENCES cases(id));
+        CREATE TABLE IF NOT EXISTS recovery_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, case_id TEXT NOT NULL, error_code TEXT NOT NULL, created_at TEXT NOT NULL, failure_type TEXT NOT NULL, recommended_recovery TEXT NOT NULL, retry_allowed INTEGER NOT NULL, human_approval_required INTEGER NOT NULL, recovery_status TEXT NOT NULL, source_references TEXT NOT NULL, actor TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS manual_follow_ups (id INTEGER PRIMARY KEY AUTOINCREMENT, case_id TEXT NOT NULL, created_at TEXT NOT NULL, responsible_role TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL);
         """)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(sla_settings)")}
         for name, default in (("remaining_time_weight", 60), ("priority_weight", 20), ("evidence_weight", 20)):
@@ -45,6 +48,11 @@ def initialize() -> None:
         if db.execute("SELECT COUNT(*) AS count FROM sla_settings").fetchone()["count"] == 0:
             db.execute("INSERT INTO sla_settings VALUES(1,24,8,4,0,60,20,20)")
         if db.execute("SELECT COUNT(*) AS count FROM escalation_role_assignments").fetchone()["count"] == 0:
+        if db.execute("SELECT COUNT(*) AS count FROM workflow_failures").fetchone()["count"] == 0:
+            db.executemany("INSERT INTO workflow_failures(case_id,occurred_at,error_code,error_details,workflow_state) VALUES(?,?,?,?,?)", [
+                ("PA-1042", "2026-10-10T09:42:00+00:00", "NOTIFY_TIMEOUT", "Payer notification timed out without delivery confirmation.", "PAYER PENDING"),
+                ("PA-1041", "2026-10-10T08:15:00+00:00", "EVIDENCE_MISSING", "Submission halted because current lab results were not verified.", "EVIDENCE REVIEW"),
+                ("PA-1039", "2026-10-10T07:30:00+00:00", "INVALID_TRANSITION", "Attempted to move from MORE INFORMATION REQUIRED directly to APPROVED.", "MORE INFORMATION REQUIRED")])
             db.executemany("INSERT INTO escalation_role_assignments(escalation_level,responsible_role,department,effective_date,expires_at) VALUES(?,?,?,?,?)", [
                 ("LEVEL_1", "Prior Authorization Supervisor", "Prior Authorization", "2026-01-01", None),
                 ("LEVEL_2", "SLA Manager", "Prior Authorization", "2026-01-01", None)])
@@ -52,6 +60,12 @@ def initialize() -> None:
             db.executemany("INSERT INTO policy_documents(policy_id,document_type,title,content,effective_date,expires_at,version,approved,payer,service_type,source_reference,required_documents) VALUES(?,?,?,?,?,?,?,1,?,?,?,?)", [
                 ("EVD-NS-MRI","PAYER_REQUIREMENT","Northstar lumbar MRI requirements","For lumbar MRI authorization, obtain clinical notes and conservative treatment history. Received documents remain unverified until reviewed by qualified staff.","2026-01-01",None,"1.0","Northstar Health","Lumbar MRI","Northstar fictional provider manual §4.2",'["Clinical notes", "Conservative treatment history"]'),
                 ("EVD-HM-INF","DOCUMENT_CHECKLIST","Harbor infusion checklist","For specialty infusion authorization, obtain the infusion order and current lab results. Filenames and receipt metadata are not proof of clinical validity.","2026-01-01",None,"1.0","Harbor Mutual","Specialty infusion","Harbor fictional checklist INF-7",'["Infusion order", "Lab results"]'),
+        if not db.execute("SELECT id FROM policy_documents WHERE policy_id='REC-001'").fetchone():
+            db.executemany("INSERT INTO policy_documents(policy_id,document_type,title,content,effective_date,expires_at,version,approved,source_reference) VALUES(?,?,?,?,?,?,?,1,?)", [
+                ("REC-001","RECOVERY_PROCEDURE","Approved workflow recovery procedure","For NOTIFY_TIMEOUT, confirm the recipient and service availability, then permit one simulated retry. For EVIDENCE_MISSING, stop and create a manual evidence follow-up. For INVALID_TRANSITION, do not retry; require operations review. For SERVICE_UNAVAILABLE, check availability and permit one retry.","2026-01-01",None,"1.0","Recovery handbook §3"),
+                ("RETRY-001","RETRY_POLICY","Bounded retry policy","Permit no more than two recovery attempts for the same case and error code. Never repeat an action after confirmed success. Sensitive status and evidence actions require human approval.","2026-01-01",None,"1.0","Recovery handbook §4"),
+                ("ERR-001","ERROR_DEFINITION","Workflow error definitions","EVIDENCE_MISSING means required evidence is absent or unverified. NOTIFY_TIMEOUT means delivery was not confirmed. INVALID_TRANSITION means the status change is not allowed. SERVICE_UNAVAILABLE means a dependency could not be reached.","2026-01-01",None,"1.0","Error catalog §2"),
+                ("MANUAL-001","MANUAL_FALLBACK","Manual recovery fallback","When recovery cannot be verified or no approved procedure applies, create an open manual follow-up for the Prior Authorization Supervisor and stop automated action.","2026-01-01",None,"1.0","Recovery handbook §7")])
                 ("EVD-NS-CT","CLINICAL_DOCUMENTATION_RULE","Northstar cardiac CT evidence rule","For cardiac CT authorization, obtain a specialist letter. A qualified human reviewer must assess clinical evidence.","2026-01-01",None,"1.0","Northstar Health","Cardiac CT","Northstar fictional guideline CT-3",'["Specialist letter"]')])
         if not db.execute("SELECT id FROM policy_documents WHERE policy_id='SLA-001'").fetchone():
             db.executemany("INSERT INTO policy_documents(policy_id,document_type,title,content,effective_date,expires_at,version,approved) VALUES(?,?,?,?,?,?,?,1)", [
