@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
-import { History, Pencil, Plus, Search, UserRoundCog, X } from 'lucide-react';
+import { format } from 'date-fns';
+import { CalendarDays, History, Pencil, Plus, Search, UserRoundCog, X } from 'lucide-react';
+import type { DateRange } from 'react-day-picker';
 import { toast } from 'sonner';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Calendar } from '@/components/ui/calendar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { paApi, type RoleAssignment, type RoleAssignmentHistoryItem, type RoleAssignmentPayload } from '@/lib/pa-api';
 
@@ -27,6 +31,7 @@ export function RoleAssignmentManager() {
   const [editing, setEditing] = useState<RoleAssignment | null>(null);
   const [retiring, setRetiring] = useState<RoleAssignment | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [historyDateRange, setHistoryDateRange] = useState<DateRange | undefined>();
   const [busy, setBusy] = useState(false);
   const [historySearch, setHistorySearch] = useState('');
   const [historyAction, setHistoryAction] = useState<'all' | RoleAssignmentHistoryItem['action']>('all');
@@ -64,14 +69,17 @@ export function RoleAssignmentManager() {
   const filteredHistory = useMemo(() => {
     const query = historySearch.trim().toLocaleLowerCase();
     return history.filter((item: RoleAssignmentHistoryItem) => {
+      const changedAt = new Date(item.changedAt);
       const matchesSearch = !query || [item.actor, item.newValues.responsibleRole, item.newValues.department].some((value: string) => value.toLocaleLowerCase().includes(query));
       const matchesAction = historyAction === 'all' || item.action === historyAction;
       const matchesLevel = historyLevel === 'all' || item.newValues.escalationLevel === historyLevel;
-      return matchesSearch && matchesAction && matchesLevel;
+      const matchesStart = !historyDateRange?.from || changedAt >= new Date(historyDateRange.from.getFullYear(), historyDateRange.from.getMonth(), historyDateRange.from.getDate());
+      const matchesEnd = !historyDateRange?.to || changedAt <= new Date(historyDateRange.to.getFullYear(), historyDateRange.to.getMonth(), historyDateRange.to.getDate(), 23, 59, 59, 999);
+      return matchesSearch && matchesAction && matchesLevel && matchesStart && matchesEnd;
     });
-  }, [history, historyAction, historyLevel, historySearch]);
-  const hasHistoryFilters = Boolean(historySearch) || historyAction !== 'all' || historyLevel !== 'all';
-  const clearHistoryFilters = () => { setHistorySearch(''); setHistoryAction('all'); setHistoryLevel('all'); };
+  }, [history, historyAction, historyDateRange, historyLevel, historySearch]);
+  const hasHistoryFilters = Boolean(historySearch) || historyAction !== 'all' || historyLevel !== 'all' || Boolean(historyDateRange?.from);
+  const clearHistoryFilters = () => { setHistorySearch(''); setHistoryAction('all'); setHistoryLevel('all'); setHistoryDateRange(undefined); };
 
   return <>
     <Card>
@@ -87,10 +95,11 @@ export function RoleAssignmentManager() {
         <CardDescription>Review who changed routing ownership, when it changed, and the values before and after each action.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px_180px_auto]">
+        <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px_180px_240px_auto]">
           <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input aria-label="Search assignment history" className="pl-9" placeholder="Search role, department, or actor" value={historySearch} onChange={(event: ChangeEvent<HTMLInputElement>) => setHistorySearch(event.target.value)} /></div>
           <Select value={historyAction} onValueChange={(value: 'all' | RoleAssignmentHistoryItem['action']) => setHistoryAction(value)}><SelectTrigger aria-label="Filter by action"><SelectValue placeholder="All actions" /></SelectTrigger><SelectContent><SelectItem value="all">All actions</SelectItem><SelectItem value="CREATED">Created</SelectItem><SelectItem value="UPDATED">Updated</SelectItem><SelectItem value="RETIRED">Retired</SelectItem></SelectContent></Select>
           <Select value={historyLevel} onValueChange={(value: 'all' | RoleAssignment['escalationLevel']) => setHistoryLevel(value)}><SelectTrigger aria-label="Filter by escalation level"><SelectValue placeholder="All levels" /></SelectTrigger><SelectContent><SelectItem value="all">All levels</SelectItem><SelectItem value="LEVEL_1">Level 1</SelectItem><SelectItem value="LEVEL_2">Level 2</SelectItem></SelectContent></Select>
+          <Popover><PopoverTrigger asChild><Button variant="outline" className="justify-start font-normal" aria-label="Filter history by date range"><CalendarDays className="size-4" />{historyDateRange?.from ? (historyDateRange.to ? `${format(historyDateRange.from, 'MMM d, yyyy')} – ${format(historyDateRange.to, 'MMM d, yyyy')}` : `From ${format(historyDateRange.from, 'MMM d, yyyy')}`) : 'All dates'}</Button></PopoverTrigger><PopoverContent className="w-auto p-0" align="end"><Calendar mode="range" selected={historyDateRange} onSelect={setHistoryDateRange} numberOfMonths={2} initialFocus /></PopoverContent></Popover>
           <Button variant="outline" onClick={clearHistoryFilters} disabled={!hasHistoryFilters}><X className="size-4" />Clear</Button>
         </div>
         <div className="mb-3 text-sm text-muted-foreground">Showing {filteredHistory.length} of {history.length} changes</div>
