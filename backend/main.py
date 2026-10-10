@@ -117,6 +117,41 @@ class EscalationPolicyUpdate(BaseModel):
     version: str
 
 
+class RoleAssignmentCreate(BaseModel):
+    escalation_level: str
+    responsible_role: str
+    department: str
+    effective_date: str
+    expires_at: str | None = None
+
+
+class RoleAssignmentUpdate(RoleAssignmentCreate):
+    pass
+
+
+def validate_role_assignment(values: dict, assignment_id: int | None = None) -> None:
+    required = ("escalation_level", "responsible_role", "department", "effective_date")
+    if not all(str(values[field]).strip() for field in required):
+        raise HTTPException(400, "Complete all required role assignment fields")
+    if values["escalation_level"] not in {"LEVEL_1", "LEVEL_2"}:
+        raise HTTPException(400, "Escalation level must be LEVEL_1 or LEVEL_2")
+    try:
+        effective = date.fromisoformat(values["effective_date"])
+        expires = date.fromisoformat(values["expires_at"]) if values["expires_at"] else None
+    except ValueError as error:
+        raise HTTPException(400, "Assignment dates must use YYYY-MM-DD") from error
+    if expires and expires < effective:
+        raise HTTPException(400, "Retirement date cannot precede the effective date")
+    with connect() as db:
+        conflict = db.execute("""SELECT id FROM escalation_role_assignments
+            WHERE escalation_level=? AND department=? AND id != ?
+            AND effective_date <= COALESCE(?, '9999-12-31')
+            AND COALESCE(expires_at, '9999-12-31') >= ? LIMIT 1""",
+            (values["escalation_level"], values["department"], assignment_id or -1, values["expires_at"], values["effective_date"])).fetchone()
+    if conflict:
+        raise HTTPException(409, "This assignment overlaps another assignment for the same department and escalation level")
+
+
 def audit(case_id: str, actor: str, action: str, detail: str, decision_type: str="HUMAN") -> None:
     with connect() as db:
         db.execute("INSERT INTO audit_events(case_id,timestamp,actor,action,detail,decision_type) VALUES(?,?,?,?,?,?)", (case_id,datetime.now(timezone.utc).isoformat(),actor,action,detail,decision_type))
@@ -278,6 +313,54 @@ def create_payer_requirement(payload: RequirementCreate) -> dict:
     values = payload.model_dump()
     required = ("requirement_id","document_type","title","payer","service_type","content","source_reference","effective_date","version")
     if not all(str(values[field]).strip() for field in required) or not values["required_documents"]:
+@app.get("/api/role-assignments")
+def list_role_assignments() -> list[dict]:
+    with connect() as db:
+        return [dict(row) for row in db.execute("SELECT * FROM escalation_role_assignments ORDER BY department,escalation_level,effective_date DESC,id DESC")]
+
+
+@app.post("/api/role-assignments")
+def create_role_assignment(payload: RoleAssignmentCreate) -> dict:
+    values = payload.model_dump()
+    validate_role_assignment(values)
+    with connect() as db:
+        cursor = db.execute("INSERT INTO escalation_role_assignments(escalation_level,responsible_role,department,effective_date,expires_at) VALUES(?,?,?,?,?)", (values["escalation_level"], values["responsible_role"], values["department"], values["effective_date"], values["expires_at"]))
+        result = dict(db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (cursor.lastrowid,)).fetchone())
+    audit("SYSTEM", "Current user", "ROLE_ASSIGNMENT_CREATED", f"Assigned {values['responsible_role']} to {values['escalation_level']} for {values['department']} effective {values['effective_date']}.", "HUMAN_OPERATIONAL_DECISION")
+    return result
+
+
+@app.put("/api/role-assignments/{assignment_id}")
+def update_role_assignment(assignment_id: int, payload: RoleAssignmentUpdate) -> dict:
+    values = payload.model_dump()
+    with connect() as db:
+        if not db.execute("SELECT id FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone():
+            raise HTTPException(404, "Role assignment not found")
+    validate_role_assignment(values, assignment_id)
+    with connect() as db:
+        db.execute("UPDATE escalation_role_assignments SET escalation_level=?,responsible_role=?,department=?,effective_date=?,expires_at=? WHERE id=?", (values["escalation_level"], values["responsible_role"], values["department"], values["effective_date"], values["expires_at"], assignment_id))
+        result = dict(db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone())
+    audit("SYSTEM", "Current user", "ROLE_ASSIGNMENT_UPDATED", f"Updated role assignment {assignment_id} for {values['department']}.", "HUMAN_OPERATIONAL_DECISION")
+    return result
+
+
+@app.post("/api/role-assignments/{assignment_id}/retire")
+def retire_role_assignment(assignment_id: int) -> dict:
+    retired_on = date.today().isoformat()
+    with connect() as db:
+        assignment = db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone()
+        if not assignment:
+            raise HTTPException(404, "Role assignment not found")
+        if assignment["expires_at"] and assignment["expires_at"] <= retired_on:
+            raise HTTPException(409, "Role assignment is already retired")
+        if assignment["effective_date"] > retired_on:
+            raise HTTPException(409, "Future assignments must be edited rather than retired")
+        db.execute("UPDATE escalation_role_assignments SET expires_at=? WHERE id=?", (retired_on, assignment_id))
+        result = dict(db.execute("SELECT * FROM escalation_role_assignments WHERE id=?", (assignment_id,)).fetchone())
+    audit("SYSTEM", "Current user", "ROLE_ASSIGNMENT_RETIRED", f"Retired role assignment {assignment_id} on {retired_on}.", "HUMAN_OPERATIONAL_DECISION")
+    return result
+
+
         raise HTTPException(400,"Complete all required payer requirement fields")
     if values["document_type"] not in {"PAYER_REQUIREMENT","DOCUMENT_CHECKLIST","CLINICAL_DOCUMENTATION_RULE","AUTHORIZATION_GUIDELINE"}:
         raise HTTPException(400,"Unsupported evidence requirement type")
