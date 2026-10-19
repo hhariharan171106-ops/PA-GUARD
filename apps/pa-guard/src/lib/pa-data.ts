@@ -2,7 +2,20 @@ export type CaseStatus = 'NEW' | 'INTAKE REVIEW' | 'EVIDENCE REVIEW' | 'READY TO
 export type Risk = 'ON TRACK' | 'AT RISK' | 'BREACHED' | 'COMPLETE';
 export type Priority = 'HIGH' | 'MEDIUM' | 'LOW';
 export type PaCase = { id: string; patientReference: string; payer: string; service: string; submissionDate: string; deadline: string; status: CaseStatus; risk: Risk; coordinator: string; priority: Priority };
-export type Document = { id: number; caseId: string; name: string; status: 'RECEIVED' | 'MISSING' | 'NEEDS REVIEW' | 'VERIFIED' };
+export type Document = {
+  id: number;
+  caseId: string;
+  name: string;
+  status: 'RECEIVED' | 'MISSING' | 'NEEDS REVIEW' | 'VERIFIED' | 'UPLOADED' | 'PROCESSING' | 'OCR_COMPLETED' | 'OCR_FAILED' | 'REVIEW_REQUIRED';
+  category?: string;
+  originalFilename?: string;
+  uploadedAt?: string;
+  processingStatus?: string;
+  ocrStatus?: string;
+  extractedText?: string;
+  evidenceSummary?: string;
+  processingError?: string;
+};
 export type AuditEvent = { id: number; caseId: string; timestamp: string; actor: string; action: string; detail: string; decisionType: string };
 
 export const initialCases: PaCase[] = [

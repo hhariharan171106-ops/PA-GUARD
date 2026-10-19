@@ -1,0 +1,551 @@
+{
+  "model_version": "sla-breach-random-forest-v3-experimental",
+  "target_definition": "sla_breach = 1 when simulated future resolution hours exceed positive hours remaining at prediction time; otherwise 0.",
+  "dataset": {
+    "source": "synthetic future-resolution simulation; not real case outcomes",
+    "seed": 20261018,
+    "sample_count": 6000,
+    "features": [
+      "hours_remaining",
+      "payer",
+      "service",
+      "case_status",
+      "unresolved_document_count",
+      "workflow_failure_count",
+      "pending_task_count"
+    ],
+    "generator_assumptions": {
+      "hours_remaining_hours": "Log-uniform between 1 and 240 hours; this is a simulation range, not a measured population distribution.",
+      "case_status_probabilities": {
+        "NEW": 0.12,
+        "INTAKE REVIEW": 0.18,
+        "EVIDENCE REVIEW": 0.22,
+        "READY TO SUBMIT": 0.1,
+        "SUBMITTED": 0.12,
+        "PAYER PENDING": 0.16,
+        "MORE INFORMATION REQUIRED": 0.1
+      },
+      "payer_delay_hours": {
+        "Northstar Health": 8,
+        "Harbor Mutual": 12,
+        "SummitCare": 18,
+        "Cedar Valley Plan": 24
+      },
+      "service_delay_hours": {
+        "Lumbar MRI": 0,
+        "Specialty infusion": 16,
+        "Knee arthroscopy": 8,
+        "Cardiac CT": 12,
+        "Physical therapy": -4
+      },
+      "status_delay_hours": {
+        "NEW": 8,
+        "INTAKE REVIEW": 12,
+        "EVIDENCE REVIEW": 18,
+        "READY TO SUBMIT": 6,
+        "SUBMITTED": 24,
+        "PAYER PENDING": 36,
+        "MORE INFORMATION REQUIRED": 48
+      },
+      "unresolved_document_count_probabilities": [
+        0.2,
+        0.34,
+        0.27,
+        0.13,
+        0.06
+      ],
+      "workflow_failure_count_probabilities": [
+        0.68,
+        0.22,
+        0.08,
+        0.02
+      ],
+      "pending_task_count_probabilities": [
+        0.38,
+        0.34,
+        0.18,
+        0.07,
+        0.03
+      ],
+      "resolution_median_hours": "max(1, status_delay + payer_delay + service_delay + 10*unresolved_documents + 8*workflow_failures + 7*pending_tasks)",
+      "resolution_duration_noise": "Log-normal with sigma=0.55",
+      "target": "sla_breach = 1 when simulated future resolution hours exceed positive hours remaining at prediction time; otherwise 0.",
+      "feature_exclusions": [
+        "simulated_resolution_hours",
+        "sla_breach",
+        "patient identifiers",
+        "document text"
+      ]
+    },
+    "class_distribution": {
+      "sample_count": 6000,
+      "no_breach": {
+        "count": 1408,
+        "proportion": 0.234667
+      },
+      "breach": {
+        "count": 4592,
+        "proportion": 0.765333
+      }
+    },
+    "split_class_distribution": {
+      "train": {
+        "sample_count": 3600,
+        "no_breach": {
+          "count": 844,
+          "proportion": 0.234444
+        },
+        "breach": {
+          "count": 2756,
+          "proportion": 0.765556
+        }
+      },
+      "validation": {
+        "sample_count": 1200,
+        "no_breach": {
+          "count": 282,
+          "proportion": 0.235
+        },
+        "breach": {
+          "count": 918,
+          "proportion": 0.765
+        }
+      },
+      "test": {
+        "sample_count": 1200,
+        "no_breach": {
+          "count": 282,
+          "proportion": 0.235
+        },
+        "breach": {
+          "count": 918,
+          "proportion": 0.765
+        }
+      }
+    },
+    "records_are_independent_draws": true,
+    "duplicate_template_leakage": "No template IDs or repeated base scenarios are used. Records are independent RNG draws; naturally recurring categories are expected.",
+    "exact_duplicate_feature_rows": 0
+  },
+  "evaluation_protocol": {
+    "split": "stratified 60% train / 20% validation / 20% sealed test",
+    "test_used_for_threshold_selection": false,
+    "preprocessing_fit_partition": "train only",
+    "threshold_selection_partition": "validation only",
+    "threshold_selection_objective": "maximize breach precision subject to validation breach recall >= 0.95",
+    "scikit_learn_version": "1.7.2",
+    "random_forest_parameters": {
+      "n_estimators": 240,
+      "min_samples_leaf": 4,
+      "max_features": "sqrt",
+      "random_state": 42,
+      "n_jobs": 1
+    }
+  },
+  "generator_assumptions": {
+    "hours_remaining_hours": "Log-uniform between 1 and 240 hours; this is a simulation range, not a measured population distribution.",
+    "case_status_probabilities": {
+      "NEW": 0.12,
+      "INTAKE REVIEW": 0.18,
+      "EVIDENCE REVIEW": 0.22,
+      "READY TO SUBMIT": 0.1,
+      "SUBMITTED": 0.12,
+      "PAYER PENDING": 0.16,
+      "MORE INFORMATION REQUIRED": 0.1
+    },
+    "payer_delay_hours": {
+      "Northstar Health": 8,
+      "Harbor Mutual": 12,
+      "SummitCare": 18,
+      "Cedar Valley Plan": 24
+    },
+    "service_delay_hours": {
+      "Lumbar MRI": 0,
+      "Specialty infusion": 16,
+      "Knee arthroscopy": 8,
+      "Cardiac CT": 12,
+      "Physical therapy": -4
+    },
+    "status_delay_hours": {
+      "NEW": 8,
+      "INTAKE REVIEW": 12,
+      "EVIDENCE REVIEW": 18,
+      "READY TO SUBMIT": 6,
+      "SUBMITTED": 24,
+      "PAYER PENDING": 36,
+      "MORE INFORMATION REQUIRED": 48
+    },
+    "unresolved_document_count_probabilities": [
+      0.2,
+      0.34,
+      0.27,
+      0.13,
+      0.06
+    ],
+    "workflow_failure_count_probabilities": [
+      0.68,
+      0.22,
+      0.08,
+      0.02
+    ],
+    "pending_task_count_probabilities": [
+      0.38,
+      0.34,
+      0.18,
+      0.07,
+      0.03
+    ],
+    "resolution_median_hours": "max(1, status_delay + payer_delay + service_delay + 10*unresolved_documents + 8*workflow_failures + 7*pending_tasks)",
+    "resolution_duration_noise": "Log-normal with sigma=0.55",
+    "target": "sla_breach = 1 when simulated future resolution hours exceed positive hours remaining at prediction time; otherwise 0.",
+    "feature_exclusions": [
+      "simulated_resolution_hours",
+      "sla_breach",
+      "patient identifiers",
+      "document text"
+    ]
+  },
+  "split_seeds": {
+    "development_vs_test": 42,
+    "train_vs_validation": 43
+  },
+  "split_counts": {
+    "train": 3600,
+    "validation": 1200,
+    "test": 1200
+  },
+  "threshold_selection": {
+    "threshold": 0.5008877,
+    "recall_target": 0.95,
+    "recall_target_met": true,
+    "validation_precision_breach": 0.932692,
+    "validation_recall_breach": 0.95098,
+    "validation_f1_breach": 0.941748,
+    "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+  },
+  "baseline_prior_only_test": {
+    "decision_threshold": 0.5008877,
+    "accuracy": 0.765,
+    "precision_breach": 0.765,
+    "recall_breach": 1.0,
+    "f1_breach": 0.866856,
+    "confusion_matrix_labels_0_1": [
+      [
+        0,
+        282
+      ],
+      [
+        0,
+        918
+      ]
+    ],
+    "true_negative": 0,
+    "false_positive": 282,
+    "false_negative": 0,
+    "true_positive": 918,
+    "false_negative_rate": 0.0,
+    "classification_report": {
+      "no_breach": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1-score": 0.0,
+        "support": 282.0
+      },
+      "breach": {
+        "precision": 0.765,
+        "recall": 1.0,
+        "f1-score": 0.8668555240793201,
+        "support": 918.0
+      },
+      "accuracy": 0.765,
+      "macro avg": {
+        "precision": 0.3825,
+        "recall": 0.5,
+        "f1-score": 0.43342776203966005,
+        "support": 1200.0
+      },
+      "weighted avg": {
+        "precision": 0.585225,
+        "recall": 0.765,
+        "f1-score": 0.6631444759206798,
+        "support": 1200.0
+      }
+    },
+    "roc_auc": 0.5,
+    "pr_auc_average_precision": 0.765,
+    "brier_score": 0.179775,
+    "calibration_bins": [
+      {
+        "bin": 7,
+        "sample_count": 1200,
+        "mean_predicted_probability": 0.765556,
+        "observed_breach_rate": 0.765
+      }
+    ]
+  },
+  "random_forest_test": {
+    "decision_threshold": 0.5008877,
+    "accuracy": 0.921667,
+    "precision_breach": 0.936441,
+    "recall_breach": 0.962963,
+    "f1_breach": 0.949517,
+    "confusion_matrix_labels_0_1": [
+      [
+        222,
+        60
+      ],
+      [
+        34,
+        884
+      ]
+    ],
+    "true_negative": 222,
+    "false_positive": 60,
+    "false_negative": 34,
+    "true_positive": 884,
+    "false_negative_rate": 0.037037,
+    "classification_report": {
+      "no_breach": {
+        "precision": 0.8671875,
+        "recall": 0.7872340425531915,
+        "f1-score": 0.8252788104089219,
+        "support": 282.0
+      },
+      "breach": {
+        "precision": 0.9364406779661016,
+        "recall": 0.9629629629629629,
+        "f1-score": 0.949516648764769,
+        "support": 918.0
+      },
+      "accuracy": 0.9216666666666666,
+      "macro avg": {
+        "precision": 0.9018140889830508,
+        "recall": 0.8750985027580772,
+        "f1-score": 0.8873977295868455,
+        "support": 1200.0
+      },
+      "weighted avg": {
+        "precision": 0.9201661811440677,
+        "recall": 0.9216666666666666,
+        "f1-score": 0.9203207567511449,
+        "support": 1200.0
+      }
+    },
+    "roc_auc": 0.972288,
+    "pr_auc_average_precision": 0.99158,
+    "brier_score": 0.059625,
+    "calibration_bins": [
+      {
+        "bin": 0,
+        "sample_count": 19,
+        "mean_predicted_probability": 0.084283,
+        "observed_breach_rate": 0.0
+      },
+      {
+        "bin": 1,
+        "sample_count": 87,
+        "mean_predicted_probability": 0.151397,
+        "observed_breach_rate": 0.045977
+      },
+      {
+        "bin": 2,
+        "sample_count": 69,
+        "mean_predicted_probability": 0.247878,
+        "observed_breach_rate": 0.072464
+      },
+      {
+        "bin": 3,
+        "sample_count": 53,
+        "mean_predicted_probability": 0.345435,
+        "observed_breach_rate": 0.301887
+      },
+      {
+        "bin": 4,
+        "sample_count": 28,
+        "mean_predicted_probability": 0.452995,
+        "observed_breach_rate": 0.321429
+      },
+      {
+        "bin": 5,
+        "sample_count": 33,
+        "mean_predicted_probability": 0.555482,
+        "observed_breach_rate": 0.545455
+      },
+      {
+        "bin": 6,
+        "sample_count": 34,
+        "mean_predicted_probability": 0.653672,
+        "observed_breach_rate": 0.676471
+      },
+      {
+        "bin": 7,
+        "sample_count": 57,
+        "mean_predicted_probability": 0.747395,
+        "observed_breach_rate": 0.684211
+      },
+      {
+        "bin": 8,
+        "sample_count": 83,
+        "mean_predicted_probability": 0.861015,
+        "observed_breach_rate": 0.831325
+      },
+      {
+        "bin": 9,
+        "sample_count": 737,
+        "mean_predicted_probability": 0.966301,
+        "observed_breach_rate": 0.997286
+      }
+    ]
+  },
+  "hours_only_test": {
+    "decision_threshold": 0.5008877,
+    "accuracy": 0.898333,
+    "precision_breach": 0.932609,
+    "recall_breach": 0.934641,
+    "f1_breach": 0.933624,
+    "confusion_matrix_labels_0_1": [
+      [
+        220,
+        62
+      ],
+      [
+        60,
+        858
+      ]
+    ],
+    "true_negative": 220,
+    "false_positive": 62,
+    "false_negative": 60,
+    "true_positive": 858,
+    "false_negative_rate": 0.065359,
+    "classification_report": {
+      "no_breach": {
+        "precision": 0.7857142857142857,
+        "recall": 0.7801418439716312,
+        "f1-score": 0.7829181494661922,
+        "support": 282.0
+      },
+      "breach": {
+        "precision": 0.9326086956521739,
+        "recall": 0.934640522875817,
+        "f1-score": 0.9336235038084875,
+        "support": 918.0
+      },
+      "accuracy": 0.8983333333333333,
+      "macro avg": {
+        "precision": 0.8591614906832298,
+        "recall": 0.8573911834237241,
+        "f1-score": 0.8582708266373398,
+        "support": 1200.0
+      },
+      "weighted avg": {
+        "precision": 0.8980885093167702,
+        "recall": 0.8983333333333333,
+        "f1-score": 0.898207745538048,
+        "support": 1200.0
+      }
+    },
+    "roc_auc": 0.952809,
+    "pr_auc_average_precision": 0.984302,
+    "brier_score": 0.074484,
+    "calibration_bins": [
+      {
+        "bin": 0,
+        "sample_count": 122,
+        "mean_predicted_probability": 0.026395,
+        "observed_breach_rate": 0.032787
+      },
+      {
+        "bin": 1,
+        "sample_count": 45,
+        "mean_predicted_probability": 0.147897,
+        "observed_breach_rate": 0.377778
+      },
+      {
+        "bin": 2,
+        "sample_count": 34,
+        "mean_predicted_probability": 0.254286,
+        "observed_breach_rate": 0.294118
+      },
+      {
+        "bin": 3,
+        "sample_count": 33,
+        "mean_predicted_probability": 0.344934,
+        "observed_breach_rate": 0.272727
+      },
+      {
+        "bin": 4,
+        "sample_count": 46,
+        "mean_predicted_probability": 0.448412,
+        "observed_breach_rate": 0.434783
+      },
+      {
+        "bin": 5,
+        "sample_count": 26,
+        "mean_predicted_probability": 0.548827,
+        "observed_breach_rate": 0.576923
+      },
+      {
+        "bin": 6,
+        "sample_count": 42,
+        "mean_predicted_probability": 0.637243,
+        "observed_breach_rate": 0.738095
+      },
+      {
+        "bin": 7,
+        "sample_count": 40,
+        "mean_predicted_probability": 0.751127,
+        "observed_breach_rate": 0.625
+      },
+      {
+        "bin": 8,
+        "sample_count": 47,
+        "mean_predicted_probability": 0.853569,
+        "observed_breach_rate": 0.829787
+      },
+      {
+        "bin": 9,
+        "sample_count": 765,
+        "mean_predicted_probability": 0.996222,
+        "observed_breach_rate": 0.977778
+      }
+    ]
+  },
+  "random_forest_global_feature_importance": [
+    {
+      "feature": "hours_remaining",
+      "importance": 0.842376
+    },
+    {
+      "feature": "case_status",
+      "importance": 0.040199
+    },
+    {
+      "feature": "unresolved_document_count",
+      "importance": 0.030219
+    },
+    {
+      "feature": "service",
+      "importance": 0.027893
+    },
+    {
+      "feature": "payer",
+      "importance": 0.025899
+    },
+    {
+      "feature": "pending_task_count",
+      "importance": 0.019377
+    },
+    {
+      "feature": "workflow_failure_count",
+      "importance": 0.014038
+    }
+  ],
+  "limitations": [
+    "Every payer, service, status weight, delay contribution, and duration distribution parameter is a transparent simulation assumption, not a verified healthcare statistic.",
+    "Synthetic holdout performance measures only agreement with this simulator; it does not establish real-world predictive performance.",
+    "The row-stratified split evaluates independent draws from the same simulator distribution, not temporal, payer-held-out, or distribution-shift generalization.",
+    "Random Forest probabilities are not calibrated. Brier score and reliability bins are reported for diagnosis; no calibration transform is applied."
+  ],
+  "artifact_path": "C:\\Users\\Admin\\Desktop\\PA_guard\\backend\\models\\sla_breach_risk_v3_experimental.joblib"
+}

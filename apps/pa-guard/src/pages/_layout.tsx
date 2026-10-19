@@ -5,7 +5,7 @@ import { usePa } from '@/lib/pa-context';
 
 const links = [
   { to: '/', label: 'Dashboard', icon: Gauge }, { to: '/cases', label: 'Case management', icon: ClipboardList },
-  { to: '/agent-center', label: 'SLA agent center', icon: Bot }, { to: '/evidence', label: 'Evidence review', icon: FileCheck2 },
+  { to: '/agent-center', label: 'Agent conversation', icon: Bot }, { to: '/evidence', label: 'Evidence review', icon: FileCheck2 },
   { to: '/escalations', label: 'Escalation center', icon: Siren }, { to: '/escalation-policies', label: 'Escalation policies', icon: ShieldEllipsis },
   { to: '/policies', label: 'Policy management', icon: BookOpenCheck }, { to: '/payer-requirements', label: 'Payer requirements', icon: Files }, { to: '/settings', label: 'SLA settings', icon: Settings },
   { to: '/audit', label: 'Audit history', icon: Archive },

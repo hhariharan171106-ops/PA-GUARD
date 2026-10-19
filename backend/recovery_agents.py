@@ -5,7 +5,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from database import connect
-from rag import cosine_similarity, embed_text
+from rag import cosine_similarity, embed_text, explain_recovery_with_ollama
 
 
 class RecoveryState(TypedDict, total=False):
@@ -13,6 +13,7 @@ class RecoveryState(TypedDict, total=False):
     error_code: str | None
     actor: str
     approve_recovery: bool
+    preview_only: bool
     now: str
     case: dict
     events: list[dict]
@@ -25,6 +26,7 @@ class RecoveryState(TypedDict, total=False):
     validation_reason: str
     plan: dict
     result: dict
+    explanation_engine: str
 
 
 FAILURE_MAP = {
@@ -105,6 +107,14 @@ def plan_recovery(state: RecoveryState) -> dict:
 
 def request_approval(state: RecoveryState) -> dict:
     plan = state["plan"]
+    if state.get("preview_only", False):
+        return {
+            "result": {
+                **plan,
+                "human_approval_required": True,
+                "recovery_status": "RECOMMENDATION_ONLY",
+            }
+        }
     if plan["human_approval_required"] and not state.get("approve_recovery", False):
         return {"result": {**plan, "recovery_status": "PENDING_APPROVAL"}}
     return {"result": {**plan, "recovery_status": "APPROVED"}}
@@ -129,6 +139,16 @@ def verify_result(state: RecoveryState) -> dict:
     return {}
 
 
+def explain_recovery(state: RecoveryState) -> dict:
+    narrative, engine = explain_recovery_with_ollama(
+        {"failure_type": state["failure_type"], **state["result"]}
+    )
+    return {
+        "result": {**state["result"], "narrative": narrative},
+        "explanation_engine": engine,
+    }
+
+
 def audit_recovery(state: RecoveryState) -> dict:
     result = {"case_id": state["case_id"], "failure_type": state["failure_type"], "error_details": state["error_details"], **state["result"]}
     with connect() as db:
@@ -147,6 +167,7 @@ builder.add_node("recovery_planning", plan_recovery)
 builder.add_node("approval", request_approval)
 builder.add_node("execution", execute_recovery)
 builder.add_node("verification", verify_result)
+builder.add_node("explanation", explain_recovery)
 builder.add_node("audit_logging", audit_recovery)
 builder.add_edge(START, "failure_detection")
 builder.add_edge("failure_detection", "retrieval")
@@ -155,11 +176,29 @@ builder.add_edge("validation", "recovery_planning")
 builder.add_edge("recovery_planning", "approval")
 builder.add_edge("approval", "execution")
 builder.add_edge("execution", "verification")
-builder.add_edge("verification", "audit_logging")
+builder.add_edge("verification", "explanation")
+builder.add_edge("explanation", "audit_logging")
 builder.add_edge("audit_logging", END)
 recovery_rag_graph = builder.compile()
 
 
-def run_recovery_rag(case_id: str, actor: str, error_code: str | None = None, approve_recovery: bool = False) -> dict:
-    state = recovery_rag_graph.invoke({"case_id": case_id, "actor": actor, "error_code": error_code, "approve_recovery": approve_recovery, "now": datetime.now(timezone.utc).isoformat()})
-    return state["result"]
+def run_recovery_rag(
+    case_id: str,
+    actor: str,
+    error_code: str | None = None,
+    approve_recovery: bool = False,
+    preview_only: bool = False,
+) -> dict:
+    state = recovery_rag_graph.invoke(
+        {
+            "case_id": case_id,
+            "actor": actor,
+            "error_code": error_code,
+            "approve_recovery": approve_recovery,
+            "preview_only": preview_only,
+            "now": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    result = dict(state["result"])
+    result["explanation_engine"] = state.get("explanation_engine", "not_run")
+    return result

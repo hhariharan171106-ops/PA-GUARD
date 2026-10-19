@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { AlertTriangle, BellRing, Bot, CheckCircle2, FileSearch } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
@@ -11,10 +12,15 @@ import type { PaCase } from '@/lib/pa-data';
 
 export default function EscalationsPage() {
   const { cases } = usePa();
+  const location = useLocation();
   const [decisions, setDecisions] = useState<Record<string, EscalationDecision>>({});
   const [runningId, setRunningId] = useState<string | null>(null);
   const [approvalCase, setApprovalCase] = useState<PaCase | null>(null);
-  const items = cases.filter((item: PaCase) => item.risk === 'AT RISK' || item.risk === 'BREACHED');
+  const requestedCaseId = new URLSearchParams(location.search).get('caseId');
+  const items = cases.filter((item: PaCase) =>
+    (!requestedCaseId || item.id === requestedCaseId) &&
+    (item.risk === 'AT RISK' || item.risk === 'BREACHED'),
+  );
 
   const evaluate = async (item: PaCase, approveNotification = false): Promise<void> => {
     setRunningId(item.id);

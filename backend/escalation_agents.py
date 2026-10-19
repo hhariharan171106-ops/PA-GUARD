@@ -144,7 +144,7 @@ def simulate_notification(state: EscalationState) -> dict:
 def explain_decision(state: EscalationState) -> dict:
     if not state["policy_valid"]:
         return {"explanation_engine": "not_run"}
-    explanation, engine = explain_escalation_with_ollama(state["result"], state["policies"])
+    explanation, engine = explain_escalation_with_ollama(state["result"])
     return {"result": {**state["result"], "reason": explanation}, "explanation_engine": engine}
 
 
@@ -181,4 +181,6 @@ escalation_rag_graph = builder.compile()
 
 def run_escalation_rag(case_id: str, actor: str, approve_notification: bool = False, now: datetime | None = None) -> dict:
     state = escalation_rag_graph.invoke({"case_id": case_id, "actor": actor, "approve_notification": approve_notification, "now": (now or datetime.now(timezone.utc)).isoformat()})
-    return state["result"]
+    result = dict(state["result"])
+    result["explanation_engine"] = state.get("explanation_engine", "not_run")
+    return result

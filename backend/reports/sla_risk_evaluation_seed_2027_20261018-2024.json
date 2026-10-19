@@ -1,0 +1,1360 @@
+{
+  "model_version": "sla-breach-random-forest-v3-experimental",
+  "target_definition": "sla_breach = 1 when simulated future resolution hours exceed positive hours remaining at prediction time; otherwise 0.",
+  "dataset": {
+    "source": "synthetic future-resolution simulation; not real case outcomes",
+    "seed": 2027,
+    "sample_count": 6000,
+    "features": [
+      "hours_remaining",
+      "payer",
+      "service",
+      "case_status",
+      "unresolved_document_count",
+      "workflow_failure_count",
+      "pending_task_count"
+    ],
+    "generator_assumptions": {
+      "hours_remaining_hours": "Log-uniform between 1 and 240 hours; this is a simulation range, not a measured population distribution.",
+      "case_status_probabilities": {
+        "NEW": 0.12,
+        "INTAKE REVIEW": 0.18,
+        "EVIDENCE REVIEW": 0.22,
+        "READY TO SUBMIT": 0.1,
+        "SUBMITTED": 0.12,
+        "PAYER PENDING": 0.16,
+        "MORE INFORMATION REQUIRED": 0.1
+      },
+      "payer_delay_hours": {
+        "Northstar Health": 8,
+        "Harbor Mutual": 12,
+        "SummitCare": 18,
+        "Cedar Valley Plan": 24
+      },
+      "service_delay_hours": {
+        "Lumbar MRI": 0,
+        "Specialty infusion": 16,
+        "Knee arthroscopy": 8,
+        "Cardiac CT": 12,
+        "Physical therapy": -4
+      },
+      "status_delay_hours": {
+        "NEW": 8,
+        "INTAKE REVIEW": 12,
+        "EVIDENCE REVIEW": 18,
+        "READY TO SUBMIT": 6,
+        "SUBMITTED": 24,
+        "PAYER PENDING": 36,
+        "MORE INFORMATION REQUIRED": 48
+      },
+      "unresolved_document_count_probabilities": [
+        0.2,
+        0.34,
+        0.27,
+        0.13,
+        0.06
+      ],
+      "workflow_failure_count_probabilities": [
+        0.68,
+        0.22,
+        0.08,
+        0.02
+      ],
+      "pending_task_count_probabilities": [
+        0.38,
+        0.34,
+        0.18,
+        0.07,
+        0.03
+      ],
+      "resolution_median_hours": "max(1, status_delay + payer_delay + service_delay + 10*unresolved_documents + 8*workflow_failures + 7*pending_tasks)",
+      "resolution_duration_noise": "Log-normal with sigma=0.55",
+      "target": "sla_breach = 1 when simulated future resolution hours exceed positive hours remaining at prediction time; otherwise 0.",
+      "feature_exclusions": [
+        "simulated_resolution_hours",
+        "sla_breach",
+        "patient identifiers",
+        "document text"
+      ]
+    },
+    "class_distribution": {
+      "sample_count": 6000,
+      "no_breach": {
+        "count": 1485,
+        "proportion": 0.2475
+      },
+      "breach": {
+        "count": 4515,
+        "proportion": 0.7525
+      }
+    },
+    "split_class_distribution": {
+      "train": {
+        "sample_count": 3600,
+        "no_breach": {
+          "count": 891,
+          "proportion": 0.2475
+        },
+        "breach": {
+          "count": 2709,
+          "proportion": 0.7525
+        }
+      },
+      "validation": {
+        "sample_count": 1200,
+        "no_breach": {
+          "count": 297,
+          "proportion": 0.2475
+        },
+        "breach": {
+          "count": 903,
+          "proportion": 0.7525
+        }
+      },
+      "test": {
+        "sample_count": 1200,
+        "no_breach": {
+          "count": 297,
+          "proportion": 0.2475
+        },
+        "breach": {
+          "count": 903,
+          "proportion": 0.7525
+        }
+      }
+    },
+    "records_are_independent_draws": true,
+    "duplicate_template_leakage": "No template IDs or repeated base scenarios are used. Records are independent RNG draws; naturally recurring categories are expected.",
+    "exact_duplicate_feature_rows": 0
+  },
+  "evaluation_protocol": {
+    "split": "stratified 60% train / 20% validation / 20% sealed test",
+    "test_used_for_threshold_selection": false,
+    "preprocessing_fit_partition": "train only",
+    "threshold_selection_partition": "validation only",
+    "threshold_selection_objective": "maximize breach precision subject to validation breach recall >= 0.95",
+    "scikit_learn_version": "1.7.2",
+    "random_forest_parameters": {
+      "n_estimators": 240,
+      "min_samples_leaf": 4,
+      "max_features": "sqrt",
+      "random_state": 2027,
+      "n_jobs": 1
+    },
+    "feature_ablation": "Each listed feature is removed in turn; its model is fitted on training rows, threshold-selected on validation rows, and evaluated once on the sealed test rows. This measures incremental predictive value within this simulator, not causality."
+  },
+  "generator_assumptions": {
+    "hours_remaining_hours": "Log-uniform between 1 and 240 hours; this is a simulation range, not a measured population distribution.",
+    "case_status_probabilities": {
+      "NEW": 0.12,
+      "INTAKE REVIEW": 0.18,
+      "EVIDENCE REVIEW": 0.22,
+      "READY TO SUBMIT": 0.1,
+      "SUBMITTED": 0.12,
+      "PAYER PENDING": 0.16,
+      "MORE INFORMATION REQUIRED": 0.1
+    },
+    "payer_delay_hours": {
+      "Northstar Health": 8,
+      "Harbor Mutual": 12,
+      "SummitCare": 18,
+      "Cedar Valley Plan": 24
+    },
+    "service_delay_hours": {
+      "Lumbar MRI": 0,
+      "Specialty infusion": 16,
+      "Knee arthroscopy": 8,
+      "Cardiac CT": 12,
+      "Physical therapy": -4
+    },
+    "status_delay_hours": {
+      "NEW": 8,
+      "INTAKE REVIEW": 12,
+      "EVIDENCE REVIEW": 18,
+      "READY TO SUBMIT": 6,
+      "SUBMITTED": 24,
+      "PAYER PENDING": 36,
+      "MORE INFORMATION REQUIRED": 48
+    },
+    "unresolved_document_count_probabilities": [
+      0.2,
+      0.34,
+      0.27,
+      0.13,
+      0.06
+    ],
+    "workflow_failure_count_probabilities": [
+      0.68,
+      0.22,
+      0.08,
+      0.02
+    ],
+    "pending_task_count_probabilities": [
+      0.38,
+      0.34,
+      0.18,
+      0.07,
+      0.03
+    ],
+    "resolution_median_hours": "max(1, status_delay + payer_delay + service_delay + 10*unresolved_documents + 8*workflow_failures + 7*pending_tasks)",
+    "resolution_duration_noise": "Log-normal with sigma=0.55",
+    "target": "sla_breach = 1 when simulated future resolution hours exceed positive hours remaining at prediction time; otherwise 0.",
+    "feature_exclusions": [
+      "simulated_resolution_hours",
+      "sla_breach",
+      "patient identifiers",
+      "document text"
+    ]
+  },
+  "split_seeds": {
+    "development_vs_test": 12027,
+    "train_vs_validation": 22027
+  },
+  "split_counts": {
+    "train": 3600,
+    "validation": 1200,
+    "test": 1200
+  },
+  "threshold_selection": {
+    "threshold": 0.49306488,
+    "recall_target": 0.95,
+    "recall_target_met": true,
+    "validation_precision_breach": 0.942857,
+    "validation_recall_breach": 0.950166,
+    "validation_f1_breach": 0.946498,
+    "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+  },
+  "baseline_prior_only_threshold_selection": {
+    "threshold": 0.7525,
+    "recall_target": 0.95,
+    "recall_target_met": true,
+    "validation_precision_breach": 0.7525,
+    "validation_recall_breach": 1.0,
+    "validation_f1_breach": 0.858773,
+    "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+  },
+  "hours_only_threshold_selection": {
+    "threshold": 0.37497354,
+    "recall_target": 0.95,
+    "recall_target_met": true,
+    "validation_precision_breach": 0.905163,
+    "validation_recall_breach": 0.951274,
+    "validation_f1_breach": 0.927646,
+    "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+  },
+  "baseline_prior_only_test": {
+    "decision_threshold": 0.7525,
+    "accuracy": 0.7525,
+    "precision_breach": 0.7525,
+    "recall_breach": 1.0,
+    "f1_breach": 0.858773,
+    "confusion_matrix_labels_0_1": [
+      [
+        0,
+        297
+      ],
+      [
+        0,
+        903
+      ]
+    ],
+    "true_negative": 0,
+    "false_positive": 297,
+    "false_negative": 0,
+    "true_positive": 903,
+    "false_negative_rate": 0.0,
+    "classification_report": {
+      "no_breach": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1-score": 0.0,
+        "support": 297.0
+      },
+      "breach": {
+        "precision": 0.7525,
+        "recall": 1.0,
+        "f1-score": 0.8587731811697575,
+        "support": 903.0
+      },
+      "accuracy": 0.7525,
+      "macro avg": {
+        "precision": 0.37625,
+        "recall": 0.5,
+        "f1-score": 0.42938659058487877,
+        "support": 1200.0
+      },
+      "weighted avg": {
+        "precision": 0.5662562499999999,
+        "recall": 0.7525,
+        "f1-score": 0.6462268188302426,
+        "support": 1200.0
+      }
+    },
+    "roc_auc": 0.5,
+    "pr_auc_average_precision": 0.7525,
+    "brier_score": 0.186244,
+    "calibration_bins": [
+      {
+        "bin": 7,
+        "sample_count": 1200,
+        "mean_predicted_probability": 0.7525,
+        "observed_breach_rate": 0.7525
+      }
+    ]
+  },
+  "random_forest_test": {
+    "decision_threshold": 0.49306488,
+    "accuracy": 0.905,
+    "precision_breach": 0.927411,
+    "recall_breach": 0.947951,
+    "f1_breach": 0.937568,
+    "confusion_matrix_labels_0_1": [
+      [
+        230,
+        67
+      ],
+      [
+        47,
+        856
+      ]
+    ],
+    "true_negative": 230,
+    "false_positive": 67,
+    "false_negative": 47,
+    "true_positive": 856,
+    "false_negative_rate": 0.052049,
+    "classification_report": {
+      "no_breach": {
+        "precision": 0.8303249097472925,
+        "recall": 0.7744107744107744,
+        "f1-score": 0.8013937282229965,
+        "support": 297.0
+      },
+      "breach": {
+        "precision": 0.9274106175514626,
+        "recall": 0.9479512735326688,
+        "f1-score": 0.9375684556407448,
+        "support": 903.0
+      },
+      "accuracy": 0.905,
+      "macro avg": {
+        "precision": 0.8788677636493776,
+        "recall": 0.8611810239717217,
+        "f1-score": 0.8694810919318706,
+        "support": 1200.0
+      },
+      "weighted avg": {
+        "precision": 0.9033819048699304,
+        "recall": 0.905,
+        "f1-score": 0.903865210604852,
+        "support": 1200.0
+      }
+    },
+    "roc_auc": 0.960946,
+    "pr_auc_average_precision": 0.986081,
+    "brier_score": 0.069519,
+    "calibration_bins": [
+      {
+        "bin": 0,
+        "sample_count": 15,
+        "mean_predicted_probability": 0.081794,
+        "observed_breach_rate": 0.066667
+      },
+      {
+        "bin": 1,
+        "sample_count": 96,
+        "mean_predicted_probability": 0.150497,
+        "observed_breach_rate": 0.041667
+      },
+      {
+        "bin": 2,
+        "sample_count": 85,
+        "mean_predicted_probability": 0.245817,
+        "observed_breach_rate": 0.129412
+      },
+      {
+        "bin": 3,
+        "sample_count": 48,
+        "mean_predicted_probability": 0.342208,
+        "observed_breach_rate": 0.375
+      },
+      {
+        "bin": 4,
+        "sample_count": 34,
+        "mean_predicted_probability": 0.44159,
+        "observed_breach_rate": 0.411765
+      },
+      {
+        "bin": 5,
+        "sample_count": 25,
+        "mean_predicted_probability": 0.540489,
+        "observed_breach_rate": 0.6
+      },
+      {
+        "bin": 6,
+        "sample_count": 35,
+        "mean_predicted_probability": 0.654085,
+        "observed_breach_rate": 0.571429
+      },
+      {
+        "bin": 7,
+        "sample_count": 50,
+        "mean_predicted_probability": 0.751609,
+        "observed_breach_rate": 0.6
+      },
+      {
+        "bin": 8,
+        "sample_count": 74,
+        "mean_predicted_probability": 0.856583,
+        "observed_breach_rate": 0.797297
+      },
+      {
+        "bin": 9,
+        "sample_count": 738,
+        "mean_predicted_probability": 0.962753,
+        "observed_breach_rate": 0.990515
+      }
+    ]
+  },
+  "hours_only_test": {
+    "decision_threshold": 0.37497354,
+    "accuracy": 0.874167,
+    "precision_breach": 0.89413,
+    "recall_breach": 0.944629,
+    "f1_breach": 0.918686,
+    "confusion_matrix_labels_0_1": [
+      [
+        196,
+        101
+      ],
+      [
+        50,
+        853
+      ]
+    ],
+    "true_negative": 196,
+    "false_positive": 101,
+    "false_negative": 50,
+    "true_positive": 853,
+    "false_negative_rate": 0.055371,
+    "classification_report": {
+      "no_breach": {
+        "precision": 0.7967479674796748,
+        "recall": 0.6599326599326599,
+        "f1-score": 0.7219152854511971,
+        "support": 297.0
+      },
+      "breach": {
+        "precision": 0.8941299790356394,
+        "recall": 0.9446290143964563,
+        "f1-score": 0.9186860527732903,
+        "support": 903.0
+      },
+      "accuracy": 0.8741666666666666,
+      "macro avg": {
+        "precision": 0.845438973257657,
+        "recall": 0.8022808371645581,
+        "f1-score": 0.8203006691122436,
+        "support": 1200.0
+      },
+      "weighted avg": {
+        "precision": 0.8700279311755381,
+        "recall": 0.8741666666666666,
+        "f1-score": 0.8699852878610721,
+        "support": 1200.0
+      }
+    },
+    "roc_auc": 0.941596,
+    "pr_auc_average_precision": 0.980187,
+    "brier_score": 0.086988,
+    "calibration_bins": [
+      {
+        "bin": 0,
+        "sample_count": 116,
+        "mean_predicted_probability": 0.021334,
+        "observed_breach_rate": 0.112069
+      },
+      {
+        "bin": 1,
+        "sample_count": 60,
+        "mean_predicted_probability": 0.146132,
+        "observed_breach_rate": 0.233333
+      },
+      {
+        "bin": 2,
+        "sample_count": 41,
+        "mean_predicted_probability": 0.25221,
+        "observed_breach_rate": 0.365854
+      },
+      {
+        "bin": 3,
+        "sample_count": 44,
+        "mean_predicted_probability": 0.356162,
+        "observed_breach_rate": 0.363636
+      },
+      {
+        "bin": 4,
+        "sample_count": 30,
+        "mean_predicted_probability": 0.445694,
+        "observed_breach_rate": 0.366667
+      },
+      {
+        "bin": 5,
+        "sample_count": 27,
+        "mean_predicted_probability": 0.545154,
+        "observed_breach_rate": 0.518519
+      },
+      {
+        "bin": 6,
+        "sample_count": 36,
+        "mean_predicted_probability": 0.642113,
+        "observed_breach_rate": 0.583333
+      },
+      {
+        "bin": 7,
+        "sample_count": 29,
+        "mean_predicted_probability": 0.755471,
+        "observed_breach_rate": 0.689655
+      },
+      {
+        "bin": 8,
+        "sample_count": 79,
+        "mean_predicted_probability": 0.847985,
+        "observed_breach_rate": 0.708861
+      },
+      {
+        "bin": 9,
+        "sample_count": 738,
+        "mean_predicted_probability": 0.99372,
+        "observed_breach_rate": 0.979675
+      }
+    ]
+  },
+  "feature_ablation_test": {
+    "payer": {
+      "excluded_feature": "payer",
+      "threshold_selection": {
+        "threshold": 0.48143693,
+        "recall_target": 0.95,
+        "recall_target_met": true,
+        "validation_precision_breach": 0.94292,
+        "validation_recall_breach": 0.951274,
+        "validation_f1_breach": 0.947078,
+        "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+      },
+      "test": {
+        "decision_threshold": 0.48143693,
+        "accuracy": 0.903333,
+        "precision_breach": 0.924488,
+        "recall_breach": 0.949059,
+        "f1_breach": 0.936612,
+        "confusion_matrix_labels_0_1": [
+          [
+            227,
+            70
+          ],
+          [
+            46,
+            857
+          ]
+        ],
+        "true_negative": 227,
+        "false_positive": 70,
+        "false_negative": 46,
+        "true_positive": 857,
+        "false_negative_rate": 0.050941,
+        "classification_report": {
+          "no_breach": {
+            "precision": 0.8315018315018315,
+            "recall": 0.7643097643097643,
+            "f1-score": 0.7964912280701755,
+            "support": 297.0
+          },
+          "breach": {
+            "precision": 0.924487594390507,
+            "recall": 0.9490586932447398,
+            "f1-score": 0.9366120218579235,
+            "support": 903.0
+          },
+          "accuracy": 0.9033333333333333,
+          "macro avg": {
+            "precision": 0.8779947129461693,
+            "recall": 0.856684228777252,
+            "f1-score": 0.8665516249640495,
+            "support": 1200.0
+          },
+          "weighted avg": {
+            "precision": 0.9014736180755598,
+            "recall": 0.9033333333333333,
+            "f1-score": 0.9019321253954559,
+            "support": 1200.0
+          }
+        },
+        "roc_auc": 0.961841,
+        "pr_auc_average_precision": 0.986877,
+        "brier_score": 0.067345,
+        "calibration_bins": [
+          {
+            "bin": 0,
+            "sample_count": 61,
+            "mean_predicted_probability": 0.067737,
+            "observed_breach_rate": 0.065574
+          },
+          {
+            "bin": 1,
+            "sample_count": 85,
+            "mean_predicted_probability": 0.145485,
+            "observed_breach_rate": 0.035294
+          },
+          {
+            "bin": 2,
+            "sample_count": 72,
+            "mean_predicted_probability": 0.250247,
+            "observed_breach_rate": 0.208333
+          },
+          {
+            "bin": 3,
+            "sample_count": 32,
+            "mean_predicted_probability": 0.354282,
+            "observed_breach_rate": 0.3125
+          },
+          {
+            "bin": 4,
+            "sample_count": 30,
+            "mean_predicted_probability": 0.444204,
+            "observed_breach_rate": 0.6
+          },
+          {
+            "bin": 5,
+            "sample_count": 28,
+            "mean_predicted_probability": 0.540728,
+            "observed_breach_rate": 0.535714
+          },
+          {
+            "bin": 6,
+            "sample_count": 33,
+            "mean_predicted_probability": 0.655568,
+            "observed_breach_rate": 0.606061
+          },
+          {
+            "bin": 7,
+            "sample_count": 44,
+            "mean_predicted_probability": 0.750291,
+            "observed_breach_rate": 0.545455
+          },
+          {
+            "bin": 8,
+            "sample_count": 69,
+            "mean_predicted_probability": 0.854819,
+            "observed_breach_rate": 0.811594
+          },
+          {
+            "bin": 9,
+            "sample_count": 746,
+            "mean_predicted_probability": 0.977205,
+            "observed_breach_rate": 0.989276
+          }
+        ]
+      },
+      "change_when_feature_is_removed": {
+        "roc_auc": 0.000895,
+        "pr_auc_average_precision": 0.000796,
+        "brier_score": -0.002174
+      }
+    },
+    "service": {
+      "excluded_feature": "service",
+      "threshold_selection": {
+        "threshold": 0.48900081,
+        "recall_target": 0.95,
+        "recall_target_met": true,
+        "validation_precision_breach": 0.942857,
+        "validation_recall_breach": 0.950166,
+        "validation_f1_breach": 0.946498,
+        "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+      },
+      "test": {
+        "decision_threshold": 0.48900081,
+        "accuracy": 0.908333,
+        "precision_breach": 0.928649,
+        "recall_breach": 0.951274,
+        "f1_breach": 0.939825,
+        "confusion_matrix_labels_0_1": [
+          [
+            231,
+            66
+          ],
+          [
+            44,
+            859
+          ]
+        ],
+        "true_negative": 231,
+        "false_positive": 66,
+        "false_negative": 44,
+        "true_positive": 859,
+        "false_negative_rate": 0.048726,
+        "classification_report": {
+          "no_breach": {
+            "precision": 0.84,
+            "recall": 0.7777777777777778,
+            "f1-score": 0.8076923076923077,
+            "support": 297.0
+          },
+          "breach": {
+            "precision": 0.9286486486486486,
+            "recall": 0.9512735326688815,
+            "f1-score": 0.9398249452954048,
+            "support": 903.0
+          },
+          "accuracy": 0.9083333333333333,
+          "macro avg": {
+            "precision": 0.8843243243243243,
+            "recall": 0.8645256552233296,
+            "f1-score": 0.8737586264938563,
+            "support": 1200.0
+          },
+          "weighted avg": {
+            "precision": 0.9067081081081081,
+            "recall": 0.9083333333333333,
+            "f1-score": 0.9071221174886382,
+            "support": 1200.0
+          }
+        },
+        "roc_auc": 0.960748,
+        "pr_auc_average_precision": 0.985949,
+        "brier_score": 0.067912,
+        "calibration_bins": [
+          {
+            "bin": 0,
+            "sample_count": 33,
+            "mean_predicted_probability": 0.069953,
+            "observed_breach_rate": 0.030303
+          },
+          {
+            "bin": 1,
+            "sample_count": 88,
+            "mean_predicted_probability": 0.145181,
+            "observed_breach_rate": 0.056818
+          },
+          {
+            "bin": 2,
+            "sample_count": 82,
+            "mean_predicted_probability": 0.247532,
+            "observed_breach_rate": 0.146341
+          },
+          {
+            "bin": 3,
+            "sample_count": 42,
+            "mean_predicted_probability": 0.349956,
+            "observed_breach_rate": 0.380952
+          },
+          {
+            "bin": 4,
+            "sample_count": 30,
+            "mean_predicted_probability": 0.440084,
+            "observed_breach_rate": 0.333333
+          },
+          {
+            "bin": 5,
+            "sample_count": 30,
+            "mean_predicted_probability": 0.543904,
+            "observed_breach_rate": 0.633333
+          },
+          {
+            "bin": 6,
+            "sample_count": 36,
+            "mean_predicted_probability": 0.650272,
+            "observed_breach_rate": 0.527778
+          },
+          {
+            "bin": 7,
+            "sample_count": 49,
+            "mean_predicted_probability": 0.752509,
+            "observed_breach_rate": 0.673469
+          },
+          {
+            "bin": 8,
+            "sample_count": 71,
+            "mean_predicted_probability": 0.850179,
+            "observed_breach_rate": 0.788732
+          },
+          {
+            "bin": 9,
+            "sample_count": 739,
+            "mean_predicted_probability": 0.968907,
+            "observed_breach_rate": 0.990528
+          }
+        ]
+      },
+      "change_when_feature_is_removed": {
+        "roc_auc": -0.000198,
+        "pr_auc_average_precision": -0.000132,
+        "brier_score": -0.001607
+      }
+    },
+    "case_status": {
+      "excluded_feature": "case_status",
+      "threshold_selection": {
+        "threshold": 0.45807965,
+        "recall_target": 0.95,
+        "recall_target_met": true,
+        "validation_precision_breach": 0.937705,
+        "validation_recall_breach": 0.950166,
+        "validation_f1_breach": 0.943894,
+        "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+      },
+      "test": {
+        "decision_threshold": 0.45807965,
+        "accuracy": 0.899167,
+        "precision_breach": 0.92316,
+        "recall_breach": 0.944629,
+        "f1_breach": 0.933771,
+        "confusion_matrix_labels_0_1": [
+          [
+            226,
+            71
+          ],
+          [
+            50,
+            853
+          ]
+        ],
+        "true_negative": 226,
+        "false_positive": 71,
+        "false_negative": 50,
+        "true_positive": 853,
+        "false_negative_rate": 0.055371,
+        "classification_report": {
+          "no_breach": {
+            "precision": 0.8188405797101449,
+            "recall": 0.7609427609427609,
+            "f1-score": 0.7888307155322862,
+            "support": 297.0
+          },
+          "breach": {
+            "precision": 0.9231601731601732,
+            "recall": 0.9446290143964563,
+            "f1-score": 0.9337712096332786,
+            "support": 903.0
+          },
+          "accuracy": 0.8991666666666667,
+          "macro avg": {
+            "precision": 0.871000376435159,
+            "recall": 0.8527858876696086,
+            "f1-score": 0.8613009625827824,
+            "support": 1200.0
+          },
+          "weighted avg": {
+            "precision": 0.8973410737812912,
+            "recall": 0.8991666666666667,
+            "f1-score": 0.897898437343283,
+            "support": 1200.0
+          }
+        },
+        "roc_auc": 0.956706,
+        "pr_auc_average_precision": 0.984992,
+        "brier_score": 0.071771,
+        "calibration_bins": [
+          {
+            "bin": 0,
+            "sample_count": 39,
+            "mean_predicted_probability": 0.069257,
+            "observed_breach_rate": 0.025641
+          },
+          {
+            "bin": 1,
+            "sample_count": 97,
+            "mean_predicted_probability": 0.151253,
+            "observed_breach_rate": 0.134021
+          },
+          {
+            "bin": 2,
+            "sample_count": 68,
+            "mean_predicted_probability": 0.240068,
+            "observed_breach_rate": 0.102941
+          },
+          {
+            "bin": 3,
+            "sample_count": 54,
+            "mean_predicted_probability": 0.349903,
+            "observed_breach_rate": 0.388889
+          },
+          {
+            "bin": 4,
+            "sample_count": 30,
+            "mean_predicted_probability": 0.450089,
+            "observed_breach_rate": 0.566667
+          },
+          {
+            "bin": 5,
+            "sample_count": 28,
+            "mean_predicted_probability": 0.55623,
+            "observed_breach_rate": 0.428571
+          },
+          {
+            "bin": 6,
+            "sample_count": 26,
+            "mean_predicted_probability": 0.653056,
+            "observed_breach_rate": 0.5
+          },
+          {
+            "bin": 7,
+            "sample_count": 53,
+            "mean_predicted_probability": 0.754023,
+            "observed_breach_rate": 0.679245
+          },
+          {
+            "bin": 8,
+            "sample_count": 53,
+            "mean_predicted_probability": 0.85724,
+            "observed_breach_rate": 0.792453
+          },
+          {
+            "bin": 9,
+            "sample_count": 752,
+            "mean_predicted_probability": 0.976403,
+            "observed_breach_rate": 0.985372
+          }
+        ]
+      },
+      "change_when_feature_is_removed": {
+        "roc_auc": -0.00424,
+        "pr_auc_average_precision": -0.001089,
+        "brier_score": 0.002252
+      }
+    },
+    "unresolved_document_count": {
+      "excluded_feature": "unresolved_document_count",
+      "threshold_selection": {
+        "threshold": 0.48400759,
+        "recall_target": 0.95,
+        "recall_target_met": true,
+        "validation_precision_breach": 0.937773,
+        "validation_recall_breach": 0.951274,
+        "validation_f1_breach": 0.944475,
+        "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+      },
+      "test": {
+        "decision_threshold": 0.48400759,
+        "accuracy": 0.899167,
+        "precision_breach": 0.921336,
+        "recall_breach": 0.946844,
+        "f1_breach": 0.933916,
+        "confusion_matrix_labels_0_1": [
+          [
+            224,
+            73
+          ],
+          [
+            48,
+            855
+          ]
+        ],
+        "true_negative": 224,
+        "false_positive": 73,
+        "false_negative": 48,
+        "true_positive": 855,
+        "false_negative_rate": 0.053156,
+        "classification_report": {
+          "no_breach": {
+            "precision": 0.8235294117647058,
+            "recall": 0.7542087542087542,
+            "f1-score": 0.7873462214411248,
+            "support": 297.0
+          },
+          "breach": {
+            "precision": 0.9213362068965517,
+            "recall": 0.946843853820598,
+            "f1-score": 0.9339158929546696,
+            "support": 903.0
+          },
+          "accuracy": 0.8991666666666667,
+          "macro avg": {
+            "precision": 0.8724328093306288,
+            "recall": 0.8505263040146761,
+            "f1-score": 0.8606310571978972,
+            "support": 1200.0
+          },
+          "weighted avg": {
+            "precision": 0.8971290251014199,
+            "recall": 0.8991666666666667,
+            "f1-score": 0.8976398992550674,
+            "support": 1200.0
+          }
+        },
+        "roc_auc": 0.957346,
+        "pr_auc_average_precision": 0.985598,
+        "brier_score": 0.071549,
+        "calibration_bins": [
+          {
+            "bin": 0,
+            "sample_count": 42,
+            "mean_predicted_probability": 0.080561,
+            "observed_breach_rate": 0.071429
+          },
+          {
+            "bin": 1,
+            "sample_count": 91,
+            "mean_predicted_probability": 0.14885,
+            "observed_breach_rate": 0.043956
+          },
+          {
+            "bin": 2,
+            "sample_count": 68,
+            "mean_predicted_probability": 0.254978,
+            "observed_breach_rate": 0.235294
+          },
+          {
+            "bin": 3,
+            "sample_count": 47,
+            "mean_predicted_probability": 0.348221,
+            "observed_breach_rate": 0.276596
+          },
+          {
+            "bin": 4,
+            "sample_count": 35,
+            "mean_predicted_probability": 0.460508,
+            "observed_breach_rate": 0.542857
+          },
+          {
+            "bin": 5,
+            "sample_count": 27,
+            "mean_predicted_probability": 0.551796,
+            "observed_breach_rate": 0.444444
+          },
+          {
+            "bin": 6,
+            "sample_count": 31,
+            "mean_predicted_probability": 0.649467,
+            "observed_breach_rate": 0.580645
+          },
+          {
+            "bin": 7,
+            "sample_count": 61,
+            "mean_predicted_probability": 0.750221,
+            "observed_breach_rate": 0.655738
+          },
+          {
+            "bin": 8,
+            "sample_count": 70,
+            "mean_predicted_probability": 0.856089,
+            "observed_breach_rate": 0.857143
+          },
+          {
+            "bin": 9,
+            "sample_count": 728,
+            "mean_predicted_probability": 0.970644,
+            "observed_breach_rate": 0.986264
+          }
+        ]
+      },
+      "change_when_feature_is_removed": {
+        "roc_auc": -0.0036,
+        "pr_auc_average_precision": -0.000483,
+        "brier_score": 0.00203
+      }
+    },
+    "pending_task_count": {
+      "excluded_feature": "pending_task_count",
+      "threshold_selection": {
+        "threshold": 0.48597898,
+        "recall_target": 0.95,
+        "recall_target_met": true,
+        "validation_precision_breach": 0.942857,
+        "validation_recall_breach": 0.950166,
+        "validation_f1_breach": 0.946498,
+        "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+      },
+      "test": {
+        "decision_threshold": 0.48597898,
+        "accuracy": 0.908333,
+        "precision_breach": 0.931447,
+        "recall_breach": 0.947951,
+        "f1_breach": 0.939627,
+        "confusion_matrix_labels_0_1": [
+          [
+            234,
+            63
+          ],
+          [
+            47,
+            856
+          ]
+        ],
+        "true_negative": 234,
+        "false_positive": 63,
+        "false_negative": 47,
+        "true_positive": 856,
+        "false_negative_rate": 0.052049,
+        "classification_report": {
+          "no_breach": {
+            "precision": 0.8327402135231317,
+            "recall": 0.7878787878787878,
+            "f1-score": 0.8096885813148789,
+            "support": 297.0
+          },
+          "breach": {
+            "precision": 0.9314472252448314,
+            "recall": 0.9479512735326688,
+            "f1-score": 0.9396267837541163,
+            "support": 903.0
+          },
+          "accuracy": 0.9083333333333333,
+          "macro avg": {
+            "precision": 0.8820937193839815,
+            "recall": 0.8679150307057284,
+            "f1-score": 0.8746576825344976,
+            "support": 1200.0
+          },
+          "weighted avg": {
+            "precision": 0.9070172398437106,
+            "recall": 0.9083333333333333,
+            "f1-score": 0.9074670786504051,
+            "support": 1200.0
+          }
+        },
+        "roc_auc": 0.962918,
+        "pr_auc_average_precision": 0.987591,
+        "brier_score": 0.067322,
+        "calibration_bins": [
+          {
+            "bin": 0,
+            "sample_count": 39,
+            "mean_predicted_probability": 0.075405,
+            "observed_breach_rate": 0.025641
+          },
+          {
+            "bin": 1,
+            "sample_count": 90,
+            "mean_predicted_probability": 0.147129,
+            "observed_breach_rate": 0.1
+          },
+          {
+            "bin": 2,
+            "sample_count": 72,
+            "mean_predicted_probability": 0.247097,
+            "observed_breach_rate": 0.083333
+          },
+          {
+            "bin": 3,
+            "sample_count": 45,
+            "mean_predicted_probability": 0.35386,
+            "observed_breach_rate": 0.377778
+          },
+          {
+            "bin": 4,
+            "sample_count": 39,
+            "mean_predicted_probability": 0.442459,
+            "observed_breach_rate": 0.410256
+          },
+          {
+            "bin": 5,
+            "sample_count": 20,
+            "mean_predicted_probability": 0.555879,
+            "observed_breach_rate": 0.65
+          },
+          {
+            "bin": 6,
+            "sample_count": 37,
+            "mean_predicted_probability": 0.654914,
+            "observed_breach_rate": 0.540541
+          },
+          {
+            "bin": 7,
+            "sample_count": 45,
+            "mean_predicted_probability": 0.744536,
+            "observed_breach_rate": 0.711111
+          },
+          {
+            "bin": 8,
+            "sample_count": 64,
+            "mean_predicted_probability": 0.8491,
+            "observed_breach_rate": 0.734375
+          },
+          {
+            "bin": 9,
+            "sample_count": 749,
+            "mean_predicted_probability": 0.968934,
+            "observed_breach_rate": 0.990654
+          }
+        ]
+      },
+      "change_when_feature_is_removed": {
+        "roc_auc": 0.001972,
+        "pr_auc_average_precision": 0.00151,
+        "brier_score": -0.002197
+      }
+    },
+    "workflow_failure_count": {
+      "excluded_feature": "workflow_failure_count",
+      "threshold_selection": {
+        "threshold": 0.46216258,
+        "recall_target": 0.95,
+        "recall_target_met": true,
+        "validation_precision_breach": 0.936888,
+        "validation_recall_breach": 0.953488,
+        "validation_f1_breach": 0.945115,
+        "selection_rule": "Among thresholds meeting the recall target, maximize breach precision; break ties by choosing the highest threshold."
+      },
+      "test": {
+        "decision_threshold": 0.46216258,
+        "accuracy": 0.905833,
+        "precision_breach": 0.924731,
+        "recall_breach": 0.952381,
+        "f1_breach": 0.938352,
+        "confusion_matrix_labels_0_1": [
+          [
+            227,
+            70
+          ],
+          [
+            43,
+            860
+          ]
+        ],
+        "true_negative": 227,
+        "false_positive": 70,
+        "false_negative": 43,
+        "true_positive": 860,
+        "false_negative_rate": 0.047619,
+        "classification_report": {
+          "no_breach": {
+            "precision": 0.8407407407407408,
+            "recall": 0.7643097643097643,
+            "f1-score": 0.800705467372134,
+            "support": 297.0
+          },
+          "breach": {
+            "precision": 0.9247311827956989,
+            "recall": 0.9523809523809523,
+            "f1-score": 0.9383524277141299,
+            "support": 903.0
+          },
+          "accuracy": 0.9058333333333334,
+          "macro avg": {
+            "precision": 0.8827359617682198,
+            "recall": 0.8583453583453583,
+            "f1-score": 0.8695289475431319,
+            "support": 1200.0
+          },
+          "weighted avg": {
+            "precision": 0.9039435483870968,
+            "recall": 0.9058333333333334,
+            "f1-score": 0.9042848050294858,
+            "support": 1200.0
+          }
+        },
+        "roc_auc": 0.95775,
+        "pr_auc_average_precision": 0.98394,
+        "brier_score": 0.070075,
+        "calibration_bins": [
+          {
+            "bin": 0,
+            "sample_count": 30,
+            "mean_predicted_probability": 0.082635,
+            "observed_breach_rate": 0.066667
+          },
+          {
+            "bin": 1,
+            "sample_count": 104,
+            "mean_predicted_probability": 0.153239,
+            "observed_breach_rate": 0.057692
+          },
+          {
+            "bin": 2,
+            "sample_count": 65,
+            "mean_predicted_probability": 0.245297,
+            "observed_breach_rate": 0.169231
+          },
+          {
+            "bin": 3,
+            "sample_count": 52,
+            "mean_predicted_probability": 0.347933,
+            "observed_breach_rate": 0.307692
+          },
+          {
+            "bin": 4,
+            "sample_count": 32,
+            "mean_predicted_probability": 0.448048,
+            "observed_breach_rate": 0.5
+          },
+          {
+            "bin": 5,
+            "sample_count": 20,
+            "mean_predicted_probability": 0.550504,
+            "observed_breach_rate": 0.6
+          },
+          {
+            "bin": 6,
+            "sample_count": 38,
+            "mean_predicted_probability": 0.64991,
+            "observed_breach_rate": 0.605263
+          },
+          {
+            "bin": 7,
+            "sample_count": 48,
+            "mean_predicted_probability": 0.751458,
+            "observed_breach_rate": 0.583333
+          },
+          {
+            "bin": 8,
+            "sample_count": 71,
+            "mean_predicted_probability": 0.85252,
+            "observed_breach_rate": 0.816901
+          },
+          {
+            "bin": 9,
+            "sample_count": 740,
+            "mean_predicted_probability": 0.967251,
+            "observed_breach_rate": 0.987838
+          }
+        ]
+      },
+      "change_when_feature_is_removed": {
+        "roc_auc": -0.003196,
+        "pr_auc_average_precision": -0.002141,
+        "brier_score": 0.000556
+      }
+    }
+  },
+  "random_forest_global_feature_importance": [
+    {
+      "feature": "hours_remaining",
+      "importance": 0.839919
+    },
+    {
+      "feature": "case_status",
+      "importance": 0.04148
+    },
+    {
+      "feature": "unresolved_document_count",
+      "importance": 0.030439
+    },
+    {
+      "feature": "service",
+      "importance": 0.027744
+    },
+    {
+      "feature": "payer",
+      "importance": 0.023567
+    },
+    {
+      "feature": "pending_task_count",
+      "importance": 0.02184
+    },
+    {
+      "feature": "workflow_failure_count",
+      "importance": 0.015011
+    }
+  ],
+  "limitations": [
+    "Every payer, service, status weight, delay contribution, and duration distribution parameter is a transparent simulation assumption, not a verified healthcare statistic.",
+    "Synthetic holdout performance measures only agreement with this simulator; it does not establish real-world predictive performance.",
+    "The row-stratified split evaluates independent draws from the same simulator distribution, not temporal, payer-held-out, or distribution-shift generalization.",
+    "Random Forest probabilities are not calibrated. Brier score and reliability bins are reported for diagnosis; no calibration transform is applied."
+  ],
+  "artifact_path": "C:\\Users\\Admin\\Desktop\\PA_guard\\backend\\models\\sla_breach_risk_v3_experimental_seed_2027_20261018-2024.joblib",
+  "json_report_path": "C:\\Users\\Admin\\Desktop\\PA_guard\\backend\\reports\\sla_risk_evaluation_seed_2027_20261018-2024.json",
+  "markdown_report_path": "C:\\Users\\Admin\\Desktop\\PA_guard\\backend\\reports\\sla_risk_evaluation_seed_2027_20261018-2024.md"
+}

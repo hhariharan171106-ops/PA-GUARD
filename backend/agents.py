@@ -79,7 +79,7 @@ def calculate_rules(state: SlaRagState) -> dict:
 def explain(state: SlaRagState) -> dict:
     if not state["policy_valid"]:
         return {"explanation_engine": "not_run"}
-    explanation, engine = explain_with_ollama(state["result"], state["policies"])
+    explanation, engine = explain_with_ollama(state["result"])
     result = {**state["result"], "explanation": explanation}
     return {"result": result, "explanation_engine": engine}
 
@@ -114,7 +114,9 @@ sla_rag_graph = builder.compile()
 def run_sla_rag(case_id: str, now: datetime | None = None) -> dict:
     calculation_time = now or datetime.now(timezone.utc)
     state = sla_rag_graph.invoke({"case_id": case_id, "now": calculation_time.isoformat()})
-    return state["result"]
+    result = dict(state["result"])
+    result["explanation_engine"] = state.get("explanation_engine", "not_run")
+    return result
 
 
 def run_sla_agent(case_ids: list[str]) -> list[dict]:
