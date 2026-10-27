@@ -2,6 +2,22 @@
 
 ## SLA breach-risk model
 
+### Shifted synthetic comparison and model card
+
+Run `python backend/evaluate_sla_shifted.py` from the repository root to
+reproduce the synthetic-only comparison with fixed seeds. It writes a separate
+experimental artifact to `backend/models/sla_shifted_experiment.joblib` and
+updates `docs/model_card.json` and `docs/MODEL_CARD.md`; it refuses to overwrite
+that artifact. The shifted test set uses a separate generator seed and changes
+the synthetic payer, service, and case-status mixes, duration noise, and
+deadline range. This is a simulator stress test, not real-world validation.
+The live endpoint continues to use its separately versioned v2 model.
+
+`GET /api/sla-risk-model-card` returns the same synthetic model-card JSON for
+review. SLA risk predictions in the frontend carry a **Synthetic model** badge.
+Neither the experimental comparisons nor live synthetic predictions are
+validated against real authorization outcomes.
+
 `sla_risk_synthetic_data.py` generates reproducible **synthetic development
 cases**. A stochastic simulated future resolution duration is compared with
 the positive time remaining at prediction; the duration itself is excluded
@@ -73,7 +89,7 @@ render raw agent JSON. The local explanation model defaults to
 `qwen3.5:latest`; set `OLLAMA_URL` and `OLLAMA_MODEL` before starting FastAPI to
 override it. The status endpoint reports whether Ollama is reachable and the
 configured model is installed. Each report also identifies whether its wording
-came from Ollama or a deterministic fallback. Generation has a 45-second
+came from Ollama or a deterministic fallback. Generation has a 90-second
 timeout by default (`OLLAMA_GENERATION_TIMEOUT_SECONDS` can override it), and
 generated summaries are capped at 64 tokens. Already-breached SLA cases use a
 deterministic, human-readable explanation rather than waiting for an LLM to
@@ -86,6 +102,35 @@ Recovery in this briefing is explicitly preview-only and does not execute a
 recovery action. The chat is an agent-report briefing, not an unrestricted
 clinical question-answering system. The transcript exists in page memory only
 and is cleared when navigating away or reloading.
+
+On a case details page, documents are staged in the browser with an individual
+category and are not uploaded when selected. The final
+**Submit queued documents & run workflow** action sends the selected files in a
+single multipart request to `POST /api/cases/{case_id}/documents/batch`. The
+batch endpoint validates, stores, and extracts each file independently and
+returns saved documents plus per-file failures for partial success. Each file
+has a stable `submission_ids` multipart value, so retries return already-saved
+documents instead of creating duplicates. The original single-file
+`POST /api/cases/{case_id}/documents` endpoint remains available for existing
+clients. After persistence, the page calls
+`POST /api/agents/cases/{case_id}/workflow` on the saved documents only.
+The workflow reuses the existing evidence, SLA, SLA-risk, and escalation
+services, runs the existing experimental evidence-gap prediction, and runs
+recovery only as a preview when a prior workflow failure is recorded. Its
+result includes per-stage status, document/OCR state, an evidence and
+escalation summary, and an LLM-generated explanation grounded in those results.
+The evidence prediction remains explicitly experimental and cannot establish
+clinical presence or absence. If Ollama is unavailable, the deterministic
+fallback is labeled and the explanation stage is reported as failed. Failed
+upload items can be retried without resending documents already saved; rerunning
+a failed AI workflow does not upload documents again. The
+**Retry failed AI stages** action calls
+`POST /api/agents/cases/{case_id}/workflow/retry`; the most recent workflow
+result is persisted in SQLite, completed stages are reused, and failed stages
+are rerun. Dependent evidence prediction, recovery preview, and the LLM
+explanation are refreshed when their inputs are rerun. This workflow only
+produces recommendations: notifications, recovery actions, and clinical
+authorization decisions remain subject to human approval.
 
 The simulator and its metrics are development scaffolding only. Metrics measure
 agreement with simulated outcomes, not performance on real cases. Before
@@ -136,13 +181,54 @@ outcome. Training exports include only `CONFIRMED` records with `PRESENT` or
 
 ## Prototype security limitation
 
-PA Guard does not currently implement authentication or authorization. The
-`reviewer_identifier` is supplied by the API caller and is **not authenticated**.
-These endpoints are suitable only for a controlled local prototype and must not
-be treated as production-grade reviewer authorization. Add verified identity,
-role-based access control, and deployment-level access protections before
-exposing them to real case data. No OCR result, processing error, or model
-prediction is automatically converted into a human label.
+The existing evidence feedback endpoint's `reviewer_identifier` is still
+supplied by its caller and is **not authenticated**. The new approval APIs have
+prototype authentication, but the legacy case/document/evidence/agent APIs are
+not globally protected. Treat the whole application as a controlled local
+prototype and do not expose it to real case data. No OCR result, processing
+error, or model prediction is automatically converted into a human label.
+
+## Run the backend
+
+## Approval workflow prototype
+
+The additive startup migration creates `pa_staff`, `pa_sessions`,
+`pa_case_assignments`, `pa_assignment_history`, `pa_notes`, `pa_reviews`, and
+`pa_approval_policy`; it does not clear or recreate `pa_guard.db`. The approval
+API uses PBKDF2 password hashes and expiring opaque bearer sessions. Local demo
+accounts are seeded only when the staff table is empty:
+
+| Role | Username | Password |
+| --- | --- | --- |
+| PA Specialist | `specialist` | `SpecialistDemo1` |
+| PA Supervisor | `supervisor` | `SupervisorDemo1` |
+| PA Manager | `manager` | `ManagerDemo1` |
+| System Administrator | `admin` | `AdminDemo1` |
+
+These credentials are for local synthetic demonstrations only. Current `/api`
+routes require a bearer session except the health check and login endpoint.
+Role and case-assignment checks run in backend middleware for both legacy and
+new routes. This local prototype is not connected to an organizational
+identity provider and is not cleared for production or operational patient use.
+
+New statuses include `SPECIALIST_REVIEW`, `AWAITING_SUPERVISOR`,
+`AWAITING_MANAGER`, `RETURNED_TO_SPECIALIST`, `UNDER_REVIEW`, `APPROVED`, and
+`DENIED`. Existing case rows retain their existing statuses. With the default
+policy, supervisor review forwards the case to `AWAITING_MANAGER`; it does not
+approve the request. The manager decision API stores reason, old/new status,
+authenticated actor, and timestamp together with an audit event. Finalized
+cases reject further actions.
+
+Allocation prioritizes overdue cases, then cases flagged by the existing SLA
+model as predicted breaches, then deterministic at-risk status, before
+deadline. If the model cannot return a prediction, deterministic status and
+deadline provide the fallback. It then chooses an active, available staff
+member in the required workflow role with the lowest open case count below the
+configured limit. Repeated allocation preserves current assignments. Manual
+reassignment checks role, availability, capacity, and preserves assignment
+history. The approval screen displays
+document metadata and OCR status; document text remains on the existing
+case-detail route.
 
 ## Run the backend
 

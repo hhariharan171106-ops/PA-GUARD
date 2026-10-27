@@ -8,8 +8,10 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import database
+import approval_api
 import evidence_agents
 import main
+import security
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -38,7 +40,7 @@ class EvidencePredictionApiTests(unittest.TestCase):
             connection.row_factory = sqlite3.Row
             return connection
 
-        for module in (database, main, evidence_agents):
+        for module in (database, main, evidence_agents, approval_api, security):
             self.stack.enter_context(patch.object(module, "connect", closing_connect))
         self.stack.enter_context(patch.object(main, "index_policies", lambda: {"indexed": 0}))
         self.stack.enter_context(
@@ -52,6 +54,9 @@ class EvidencePredictionApiTests(unittest.TestCase):
             )
         )
         self.client = self.stack.enter_context(TestClient(main.app))
+        login = self.client.post("/api/auth/login", json={"username":"manager","password":"ManagerDemo1"})
+        self.assertEqual(login.status_code, 200, login.text)
+        self.client.headers.update({"Authorization": f"Bearer {login.json()['token']}"})
         self.addCleanup(self.stack.close)
 
     def add_case_and_document(self) -> None:

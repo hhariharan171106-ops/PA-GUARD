@@ -256,7 +256,14 @@ function ErrorDisplay({
   errorInfo?: React.ErrorInfo;
   onReset: () => void;
 }) {
-  const parsed = parseError(error, errorInfo);
+  const showTechnicalDetails = process.env.NODE_ENV !== 'production';
+  const parsed = showTechnicalDetails
+    ? parseError(error, errorInfo)
+    : {
+        title: 'We could not open this screen',
+        description: 'Something went wrong while loading this page. Reload it and try again. If the problem continues, contact your PA Guard administrator.',
+        suggestion: 'Reload this page. Your saved case information has not been changed by this display error.',
+      };
 
   const aiPrompt = `I encountered this error in my app and need help fixing it.
 
@@ -293,7 +300,7 @@ Please explain what caused this error and provide a fix.`;
         {/* Content */}
         <div className="px-5 py-4 space-y-4">
           {/* Location info */}
-          {(parsed.component || parsed.file) && (
+          {showTechnicalDetails && (parsed.component || parsed.file) && (
             <div className="flex flex-wrap gap-2">
               {parsed.component && (
                 <span className="inline-flex items-center px-2.5 py-1 rounded bg-[#f3f2f1] text-xs font-medium text-[#323130]">
@@ -317,7 +324,7 @@ Please explain what caused this error and provide a fix.`;
           </div>
 
           {/* Actions */}
-          <div className="flex flex-wrap gap-2">
+          {showTechnicalDetails && <div className="flex flex-wrap gap-2">
             <CopyButton
               text={aiPrompt}
               label="Copy for AI"
@@ -340,10 +347,18 @@ Please explain what caused this error and provide a fix.`;
               <RefreshIcon className="w-4 h-4" />
               Reload
             </button>
-          </div>
+          </div>}
+          {!showTechnicalDetails && <button
+            type="button"
+            onClick={onReset}
+            className="inline-flex items-center justify-center gap-2 rounded-md border border-[#8a8886] bg-white px-4 py-2 text-sm font-medium text-[#323130] hover:bg-[#f3f2f1] focus:outline-none focus:ring-2 focus:ring-[#0078d4]"
+          >
+            <RefreshIcon className="h-4 w-4" />
+            Reload page
+          </button>}
 
           {/* Technical details */}
-          <Collapsible title="Technical details">
+          {showTechnicalDetails && <Collapsible title="Developer details">
             <div className="space-y-3">
               <div>
                 <div className="text-xs font-medium text-[#605e5c] uppercase tracking-wide mb-1">
@@ -374,7 +389,7 @@ Please explain what caused this error and provide a fix.`;
                 </div>
               )}
             </div>
-          </Collapsible>
+          </Collapsible>}
         </div>
       </div>
     </div>

@@ -1,0 +1,89 @@
+{
+  "dataset_source": "ekacare/medical_records_parsing_validation_set",
+  "random_seed": 42,
+  "total_samples": 288,
+  "unique_images": 288,
+  "duplicate_md5_count": 0,
+  "all_images_valid": true,
+  "class_distribution": {
+    "Prescription": 70,
+    "Lab-report": 218
+  },
+  "train_samples": 216,
+  "test_samples": 72,
+  "train_distribution": {
+    "Lab-report": 163,
+    "Prescription": 53
+  },
+  "test_distribution": {
+    "Prescription": 17,
+    "Lab-report": 55
+  },
+  "feature_count": 15,
+  "feature_descriptions": [
+    "aspect_ratio",
+    "mean_intensity",
+    "std_intensity",
+    "grad_x_edge_density",
+    "grad_y_row_density",
+    "row_projection_variance",
+    "col_projection_variance",
+    "intensity_histogram_8bins"
+  ],
+  "majority_class_baseline": {
+    "accuracy": 0.7638888888888888,
+    "precision_macro": 0.3819444444444444,
+    "recall_macro": 0.5,
+    "f1_macro": 0.4330708661417323,
+    "precision_weighted": 0.5835262345679012,
+    "recall_weighted": 0.7638888888888888,
+    "f1_weighted": 0.6616360454943133
+  },
+  "lightweight_model": {
+    "model_type": "LogisticRegression(class_weight='balanced')",
+    "metrics": {
+      "accuracy": 0.5277777777777778,
+      "precision_macro": 0.4909520062942565,
+      "recall_macro": 0.48770053475935826,
+      "f1_macro": 0.46875,
+      "precision_weighted": 0.6308899379316374,
+      "recall_weighted": 0.5277777777777778,
+      "f1_weighted": 0.5622106481481483,
+      "confusion_matrix": [
+        [
+          31,
+          24
+        ],
+        [
+          10,
+          7
+        ]
+      ],
+      "classes": [
+        "Lab-report",
+        "Prescription"
+      ],
+      "per_class": {
+        "Lab-report": {
+          "precision": 0.7560975609756098,
+          "recall": 0.5636363636363636,
+          "f1": 0.6458333333333334
+        },
+        "Prescription": {
+          "precision": 0.22580645161290322,
+          "recall": 0.4117647058823529,
+          "f1": 0.2916666666666667
+        }
+      }
+    }
+  },
+  "execution_time_seconds": 16.87,
+  "limitations": [
+    "The Eka dataset contains only 288 samples across exactly two document types (Lab-report and Prescription).",
+    "The dataset does not contain prior-authorization medical necessity labels or evidence sufficiency labels.",
+    "It does not contain other essential prior-authorization document types (Clinical Notes, Imaging Reports, Treatment History, Specialist Consultation Letters).",
+    "It does not contain extracted text features; sample_prompt and rubrics are generic parsing instructions rather than patient record text.",
+    "Document format classification (identifying a document as a prescription or lab report) does NOT validate clinical necessity.",
+    "The production evidence gap classifier in evidence_prediction_model.py is safely preserved and not overwritten."
+  ]
+}

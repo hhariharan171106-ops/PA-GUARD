@@ -10,7 +10,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import database
+import approval_api
 import main
+import security
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -40,12 +42,20 @@ class EvidenceReviewFeedbackApiTests(unittest.TestCase):
             connection.execute("PRAGMA foreign_keys=ON")
             return connection
 
-        for module in (database, main):
+        for module in (database, main, approval_api, security):
             self.stack.enter_context(patch.object(module, "connect", closing_connect))
         self.stack.enter_context(
             patch.object(main, "index_policies", lambda: {"indexed": 0})
         )
         self.client = self.stack.enter_context(TestClient(main.app))
+        login = self.client.post("/api/auth/login", json={"username":"supervisor","password":"SupervisorDemo1"})
+        self.assertEqual(login.status_code, 200, login.text)
+        self.client.headers.update({"Authorization": f"Bearer {login.json()['token']}"})
+        with database.connect() as db:
+            db.execute("INSERT OR REPLACE INTO pa_case_assignments(case_id,specialist_id,supervisor_id,manager_id,updated_at) VALUES('PA-1042',1,2,3,'test')")
+        manager_login = self.client.post("/api/auth/login", json={"username":"manager","password":"ManagerDemo1"})
+        self.assertEqual(manager_login.status_code, 200, manager_login.text)
+        self.manager_headers = {"Authorization": f"Bearer {manager_login.json()['token']}"}
         self.addCleanup(self.stack.close)
 
     def submit(self, evidence: str = "Clinical notes", prediction: str | None = None):
@@ -111,7 +121,7 @@ class EvidenceReviewFeedbackApiTests(unittest.TestCase):
                 self.assertEqual(reviewed.json()["human_outcome"], outcome)
                 self.assertEqual(reviewed.json()["review_status"], "CONFIRMED")
                 self.assertEqual(
-                    reviewed.json()["reviewer_identifier"], "reviewer-test-17"
+                    reviewed.json()["reviewer_identifier"], "supervisor"
                 )
 
     def test_unknown_and_needs_review_outcomes_are_excluded(self) -> None:
@@ -122,7 +132,7 @@ class EvidenceReviewFeedbackApiTests(unittest.TestCase):
                 self.assertEqual(reviewed.status_code, 200, reviewed.text)
 
         export = self.client.get(
-            "/api/evidence-review-feedback/training-export?format=json"
+            "/api/evidence-review-feedback/training-export?format=json", headers=self.manager_headers
         )
         self.assertEqual(export.status_code, 200, export.text)
         self.assertEqual(export.json(), {"count": 0, "records": []})
@@ -137,7 +147,7 @@ class EvidenceReviewFeedbackApiTests(unittest.TestCase):
         self.assertEqual(rejected_result.json()["review_status"], "REJECTED")
 
         export = self.client.get(
-            "/api/evidence-review-feedback/training-export?format=json"
+            "/api/evidence-review-feedback/training-export?format=json", headers=self.manager_headers
         )
         self.assertEqual(export.json(), {"count": 0, "records": []})
         self.assertEqual(pending.json()["review_status"], "PENDING")
@@ -148,7 +158,7 @@ class EvidenceReviewFeedbackApiTests(unittest.TestCase):
         self.assertEqual(reviewed.status_code, 200, reviewed.text)
 
         json_export = self.client.get(
-            "/api/evidence-review-feedback/training-export?format=json"
+            "/api/evidence-review-feedback/training-export?format=json", headers=self.manager_headers
         )
         self.assertEqual(json_export.status_code, 200, json_export.text)
         result = json_export.json()
@@ -173,7 +183,7 @@ class EvidenceReviewFeedbackApiTests(unittest.TestCase):
         self.assertNotIn("extracted_text", record)
 
         csv_export = self.client.get(
-            "/api/evidence-review-feedback/training-export?format=csv"
+            "/api/evidence-review-feedback/training-export?format=csv", headers=self.manager_headers
         )
         self.assertEqual(csv_export.status_code, 200)
         rows = list(csv.DictReader(io.StringIO(csv_export.text)))

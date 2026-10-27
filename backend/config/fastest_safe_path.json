@@ -1,0 +1,12 @@
+{
+  "tightness_fraction": 0.8,
+  "audit_enabled": true,
+  "actions": {
+    "CONFIRM_EVIDENCE_MATCH": {"description_template": "Human review of the possible match for criterion {criterion_id}", "required_role": "SUPERVISOR", "estimated_minutes": 5, "blocking": true, "can_be_done_in_system": true, "dependencies": [], "parallelizable": true, "duration_known": true, "external_dependency": false},
+    "REVIEW_UNCERTAIN_MATCH": {"description_template": "Resolve the uncertain evidence assessment for criterion {criterion_id}", "required_role": "SUPERVISOR", "estimated_minutes": 10, "blocking": true, "can_be_done_in_system": true, "dependencies": [], "parallelizable": true, "duration_known": true, "external_dependency": false},
+    "REQUEST_MISSING_DOCUMENT": {"description_template": "Request the document associated with criterion {criterion_id}; external response time is unknown", "required_role": "SPECIALIST", "estimated_minutes": null, "blocking": true, "can_be_done_in_system": true, "workflow_supported": false, "dependencies": [], "parallelizable": true, "duration_known": false, "external_dependency": true},
+    "RESOLVE_POLICY_VERIFICATION": {"description_template": "Authorized policy owner must resolve verification for policy {policy_id}", "required_role": "MANAGER", "estimated_minutes": 15, "blocking": true, "can_be_done_in_system": true, "dependencies": [], "parallelizable": false, "duration_known": true, "external_dependency": false},
+    "REQUEST_MANAGER_REVIEW": {"description_template": "Request manager review after prerequisite policy and evidence gaps are cleared", "required_role": "MANAGER", "estimated_minutes": 10, "blocking": true, "can_be_done_in_system": true, "dependencies": ["prerequisites"], "parallelizable": false, "duration_known": true, "external_dependency": false},
+    "ESCALATE_FOR_PAYER_EXTENSION": {"description_template": "Use the existing internal escalation workflow to ask an authorized supervisor to explore a payer extension; this recommendation sends nothing and does not grant an extension", "required_role": "SPECIALIST_OR_SUPERVISOR", "estimated_minutes": 10, "blocking": false, "can_be_done_in_system": true, "dependencies": [], "parallelizable": false, "duration_known": true, "external_dependency": true}
+  }
+}

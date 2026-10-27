@@ -7,13 +7,14 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { usePa } from '@/lib/pa-context';
-import { paApi, type EscalationDecision } from '@/lib/pa-api';
+import { paApi, type EscalationDecision, type EvidenceFinding } from '@/lib/pa-api';
 import type { PaCase } from '@/lib/pa-data';
 
 export default function EscalationsPage() {
-  const { cases } = usePa();
+  const { cases, documents } = usePa();
   const location = useLocation();
   const [decisions, setDecisions] = useState<Record<string, EscalationDecision>>({});
+  const [evidenceFindings, setEvidenceFindings] = useState<Record<string, EvidenceFinding>>({});
   const [runningId, setRunningId] = useState<string | null>(null);
   const [approvalCase, setApprovalCase] = useState<PaCase | null>(null);
   const requestedCaseId = new URLSearchParams(location.search).get('caseId');
@@ -27,6 +28,12 @@ export default function EscalationsPage() {
     try {
       const decision = await paApi.runEscalationAgent(item.id, approveNotification);
       setDecisions((current: Record<string, EscalationDecision>) => ({ ...current, [item.id]: decision }));
+      try {
+        const finding = await paApi.runEvidenceAgent(item.id);
+        setEvidenceFindings((current: Record<string, EvidenceFinding>) => ({ ...current, [item.id]: finding }));
+      } catch (error: unknown) {
+        toast.error(`Escalation recommendation is available, but evidence summary failed: ${error instanceof Error ? error.message : 'Evidence review failed.'}`);
+      }
 
       if (decision.notificationStatus === 'SIMULATED_DELIVERED') toast.success('Simulated notification confirmed and audited.');
       else toast.success('Escalation recommendation created.');
@@ -51,6 +58,8 @@ export default function EscalationsPage() {
       <div className="space-y-3">
         {items.map((item: PaCase) => {
           const decision = decisions[item.id];
+          const evidence = evidenceFindings[item.id];
+          const caseDocuments = documents.filter((document) => document.caseId === item.id);
           return (
             <Card key={item.id} className={item.risk === 'BREACHED' ? 'border-l-4 border-l-destructive' : 'border-l-4 border-l-primary'}>
               <CardHeader className="pb-3">
@@ -80,7 +89,10 @@ export default function EscalationsPage() {
                     <Badge className="mt-2" variant="secondary">{decision.notificationStatus.replaceAll('_', ' ')}</Badge>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">Grounded rationale</p>
+                    <div className="mb-1 flex flex-wrap items-center gap-2">
+                      <p className="text-xs text-muted-foreground">Agent rationale</p>
+                      <Badge variant="outline">{decision.explanationEngine?.startsWith('ollama:') ? `Local LLM · ${decision.explanationEngine.slice('ollama:'.length)}` : 'Deterministic fallback'}</Badge>
+                    </div>
                     <p className="text-sm">{decision.reason}</p>
                     <p className="mt-2 text-sm font-medium">{decision.recommendedAction}</p>
                     <div className="mt-2 flex flex-wrap gap-1">
@@ -95,6 +107,49 @@ export default function EscalationsPage() {
                     ) : decision.notificationStatus === 'DUPLICATE_SUPPRESSED' ? (
                       <div className="flex items-center gap-2 text-sm"><AlertTriangle className="size-4" />Duplicate suppressed</div>
                     ) : null}
+                  </div>
+                  <div className="col-span-full rounded-md border p-3">
+                    <p className="text-sm font-semibold">Case evidence and SLA summary · human review required</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Case status: {item.status} · SLA risk: {item.risk} · Deadline: {item.deadline}
+                    </p>
+                    <div className="mt-3 grid gap-4 md:grid-cols-2">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Uploaded documents</p>
+                        {caseDocuments.length ? (
+                          <ul className="mt-1 space-y-1 text-sm">
+                            {caseDocuments.map((document) => (
+                              <li key={document.id}>
+                                {document.originalFilename ?? document.name} · {document.category ?? 'Uncategorized'} · OCR {document.ocrStatus ?? 'not started'}{document.processingError ? ` · ${document.processingError}` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : <p className="mt-1 text-sm">No uploaded documents.</p>}
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Evidence requirements and gaps</p>
+                        {!evidence ? <p className="mt-1 text-sm">Evidence review unavailable; run Evaluate again or review the case manually.</p> : evidence.requiredDocuments.length ? (
+                          <ul className="mt-1 space-y-1 text-sm">
+                            {evidence.requiredDocuments.map((requiredDocument) => {
+                              const found = evidence.foundDocuments.filter((match) => match.requiredDocument === requiredDocument);
+                              const possible = evidence.possibleEvidenceMatches.filter((match) => match.requiredDocument === requiredDocument);
+                              const status = found.length ? 'Text found · human verification required' : possible.length ? 'Possible match · human verification required' : evidence.missingDocuments.includes(requiredDocument) ? 'Not found in readable text' : evidence.unreadableDocuments.length ? 'Not verifiable while OCR needs review' : 'Not identified';
+                              const supportingDocs = [...found, ...possible].map((match) => `${match.documentName} (${match.category || 'Uncategorized'})`);
+                              return <li key={requiredDocument}><strong>{requiredDocument}:</strong> {status}{supportingDocs.length ? ` · ${supportingDocs.join(', ')}` : ''}</li>;
+                            })}
+                          </ul>
+                        ) : <p className="mt-1 text-sm">No applicable approved evidence requirements; human policy review is needed.</p>}
+                        {evidence?.unreadableDocuments.map((document) => (
+                          <p key={`${document.documentName}-${document.reason}`} className="mt-1 text-sm text-destructive">
+                            OCR review: {document.documentName} · {document.category || 'Uncategorized'} · {document.ocrStatus || 'status unknown'} · {document.reason}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                    {evidence && <p className="mt-3 text-sm"><strong>Evidence recommendation:</strong> {evidence.recommendedAction}</p>}
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Escalation recommendation: {decision.recommendedAction} The escalation policy and notification approval controls are unchanged.
+                    </p>
                   </div>
                 </CardContent>
               )}

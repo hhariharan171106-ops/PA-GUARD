@@ -4,6 +4,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from case_deadline import parse_case_deadline
 from database import connect
 from rag import cosine_similarity, embed_text, explain_escalation_with_ollama
 
@@ -93,9 +94,7 @@ def validate_policy(state: EscalationState) -> dict:
 def evaluate_rules(state: EscalationState) -> dict:
     case = state["case"]
     now = datetime.fromisoformat(state["now"])
-    deadline = datetime.fromisoformat(case["deadline"])
-    if deadline.tzinfo is None:
-        deadline = deadline.replace(tzinfo=timezone.utc)
+    deadline = parse_case_deadline(case["deadline"])
     remaining_hours = round((deadline - now).total_seconds() / 3600, 1)
     references = [{"policy_id": item["policy_id"], "document_type": item["document_type"], "effective_date": item["effective_date"], "version": item["version"], "similarity": item["similarity"]} for item in state["policies"]]
     if not state["policy_valid"]:
@@ -107,7 +106,8 @@ def evaluate_rules(state: EscalationState) -> dict:
         required, level = True, "LEVEL_1"
     else:
         required, level = False, "NONE"
-    role = state["level_roles"].get(level, case["coordinator"] if level == "NONE" else "Human policy reviewer")
+    # Coordinator is case metadata, not the receiving assignee, and may be a demo identity.
+    role = state["level_roles"].get(level, "" if level == "NONE" else "Human policy reviewer")
     same_level = [item for item in state["attempts"] if item["escalation_level"] == level]
     duplicate = any(item["notification_status"] in ("SIMULATED_DELIVERED", "PENDING_APPROVAL") for item in same_level)
     failed = any(item["notification_status"] == "SIMULATED_FAILED" for item in same_level)
@@ -119,7 +119,7 @@ def evaluate_rules(state: EscalationState) -> dict:
     elif required:
         action = f"Request human approval to simulate notification to {role}."
     else:
-        action = "Continue monitoring; no escalation threshold has been reached."
+        action = "Continue monitoring; no formal escalation threshold has been reached. Review elevated model risk and unresolved evidence separately."
     status = "DUPLICATE_SUPPRESSED" if duplicate else "PENDING_APPROVAL" if required else "NOT_REQUIRED"
     return {"result": {"case_id": case["id"], "escalation_required": required, "escalation_level": level, "reason": reason, "responsible_role": role, "recommended_action": action, "approval_required": required, "source_references": references, "notification_status": status, "remaining_hours": remaining_hours}}
 
@@ -142,8 +142,6 @@ def simulate_notification(state: EscalationState) -> dict:
 
 
 def explain_decision(state: EscalationState) -> dict:
-    if not state["policy_valid"]:
-        return {"explanation_engine": "not_run"}
     explanation, engine = explain_escalation_with_ollama(state["result"])
     return {"result": {**state["result"], "reason": explanation}, "explanation_engine": engine}
 

@@ -1,8 +1,12 @@
 import sqlite3
-from pathlib import Path
+try:
+    from .config import DB_PATH, DOCUMENT_STORAGE_DIR
+except ImportError:
+    from config import DB_PATH, DOCUMENT_STORAGE_DIR
 
-DB_PATH = Path(__file__).parent / "pa_guard.db"
-DOCUMENT_STORAGE_DIR = Path(__file__).parent / "document_storage"
+
+
+
 
 
 def connect() -> sqlite3.Connection:
@@ -103,7 +107,63 @@ def initialize() -> None:
                 source_reference TEXT,
                 required_documents TEXT,
                 department TEXT,
+                verification_status TEXT DEFAULT 'MOCK_DEMO',
+                required_categories TEXT DEFAULT '[]',
+                specific_evidence_requirements TEXT DEFAULT '[]',
                 UNIQUE(policy_id, version)
+            );
+
+            CREATE TABLE IF NOT EXISTS policy_criteria (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                policy_id TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                criterion_id TEXT NOT NULL,
+                criterion_text TEXT NOT NULL,
+                service_scope TEXT,
+                source_url TEXT,
+                source_version TEXT,
+                supporting_excerpt TEXT,
+                source_locator TEXT,
+                verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
+                verification_notes TEXT,
+                verified_by TEXT,
+                verified_at TEXT,
+                UNIQUE(policy_id, policy_version, criterion_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS policy_source_verification_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                policy_id TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                attempted_at TEXT NOT NULL,
+                attempted_by TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                authoritative_title TEXT NOT NULL DEFAULT '',
+                authoritative_version TEXT NOT NULL DEFAULT '',
+                source_effective_date TEXT,
+                source_status TEXT NOT NULL,
+                attempt_status TEXT NOT NULL,
+                source_sha256 TEXT,
+                criteria_json TEXT NOT NULL,
+                verification_note TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS case_evidence_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL,
+                policy_id TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                criterion_id TEXT NOT NULL,
+                document_id INTEGER,
+                assessment_status TEXT NOT NULL,
+                review_status TEXT NOT NULL DEFAULT 'PENDING',
+                reviewer_id TEXT,
+                reviewed_at TEXT,
+                review_notes TEXT NOT NULL DEFAULT '',
+                source_locator TEXT,
+                supporting_excerpt TEXT,
+                audit_event_id INTEGER,
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS sla_recommendations (
@@ -138,6 +198,8 @@ def initialize() -> None:
             CREATE TABLE IF NOT EXISTS evidence_review_feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 case_id TEXT NOT NULL,
+                document_id INTEGER,
+                model_version TEXT,
                 required_evidence TEXT NOT NULL
                     CHECK(length(trim(required_evidence)) BETWEEN 1 AND 200),
                 ml_prediction TEXT
@@ -211,6 +273,13 @@ def initialize() -> None:
                 FOREIGN KEY(case_id) REFERENCES cases(id)
             );
 
+            CREATE TABLE IF NOT EXISTS case_workflow_state (
+                case_id TEXT PRIMARY KEY,
+                updated_at TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES cases(id)
+            );
+
             CREATE TABLE IF NOT EXISTS recovery_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 case_id TEXT NOT NULL,
@@ -233,8 +302,139 @@ def initialize() -> None:
                 reason TEXT NOT NULL,
                 status TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS pa_staff (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('SPECIALIST','SUPERVISOR','MANAGER','ADMIN')),
+                password_hash TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                available INTEGER NOT NULL DEFAULT 1,
+                max_workload INTEGER NOT NULL DEFAULT 10,
+                service_types TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_staff_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                actor_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_sessions (
+                token_hash TEXT PRIMARY KEY,
+                staff_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                expires_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_case_assignments (
+                case_id TEXT PRIMARY KEY REFERENCES cases(id),
+                specialist_id INTEGER REFERENCES pa_staff(id),
+                supervisor_id INTEGER REFERENCES pa_staff(id),
+                manager_id INTEGER REFERENCES pa_staff(id),
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_assignment_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL REFERENCES cases(id),
+                actor_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                from_staff_id INTEGER REFERENCES pa_staff(id),
+                to_staff_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                role TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_escalations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL REFERENCES cases(id),
+                from_staff_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                from_role TEXT NOT NULL,
+                to_staff_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                to_role TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                explanation TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('ROUTED','ACCEPTED','CLOSED')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL REFERENCES cases(id),
+                actor_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                action TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                old_status TEXT NOT NULL,
+                new_status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL REFERENCES cases(id),
+                actor_id INTEGER NOT NULL REFERENCES pa_staff(id),
+                role TEXT NOT NULL,
+                note TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_approval_policy (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                manager_final_required INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS pa_submission_readiness (
+                case_id TEXT PRIMARY KEY REFERENCES cases(id) ON DELETE RESTRICT,
+                version INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('NOT_READY','NEEDS_HUMAN_REVIEW','READY_FOR_REVIEW')),
+                fingerprint TEXT NOT NULL,
+                decision_json TEXT NOT NULL,
+                evaluated_by INTEGER NOT NULL REFERENCES pa_staff(id),
+                evaluated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_submission_approvals (
+                case_id TEXT PRIMARY KEY REFERENCES cases(id) ON DELETE RESTRICT,
+                readiness_version INTEGER NOT NULL,
+                approved_by INTEGER NOT NULL REFERENCES pa_staff(id),
+                reason TEXT NOT NULL,
+                approved_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_submission_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE RESTRICT,
+                idempotency_key TEXT NOT NULL,
+                adapter_type TEXT NOT NULL CHECK(adapter_type IN ('DEMO','PAYER')),
+                status TEXT NOT NULL,
+                reference_id TEXT,
+                response_summary TEXT NOT NULL,
+                attempted_by INTEGER NOT NULL REFERENCES pa_staff(id),
+                attempted_at TEXT NOT NULL,
+                UNIQUE(case_id,idempotency_key)
+            );
             """
         )
+
+        if db.execute("SELECT COUNT(*) AS count FROM pa_staff").fetchone()["count"] == 0:
+            # Local jury demo accounts; passwords are PBKDF2 hashes, never plaintext.
+            import hashlib
+            import os
+            demo_users = [
+                ("specialist", "Maya Chen", "SPECIALIST", "SpecialistDemo1"),
+                ("supervisor", "Jordan Lee", "SUPERVISOR", "SupervisorDemo1"),
+                ("manager", "Avery Patel", "MANAGER", "ManagerDemo1"),
+                ("admin", "Taylor Morgan", "ADMIN", "AdminDemo1"),
+            ]
+            for username, name, role, password in demo_users:
+                salt = os.urandom(16)
+                digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 310000)
+                encoded = f"pbkdf2_sha256${salt.hex()}${digest.hex()}"
+                db.execute("INSERT INTO pa_staff(username,display_name,role,password_hash,created_at) VALUES(?,?,?,?,datetime('now'))", (username,name,role,encoded))
+        db.execute("INSERT OR IGNORE INTO pa_approval_policy(id,manager_final_required) VALUES(1,1)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_pa_history_case ON pa_reviews(case_id,created_at)")
+        staff_columns = {row["name"] for row in db.execute("PRAGMA table_info(pa_staff)")}
+        if "service_types" not in staff_columns:
+            db.execute("ALTER TABLE pa_staff ADD COLUMN service_types TEXT NOT NULL DEFAULT '[]'")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_pa_staff_history_staff ON pa_staff_history(staff_id,created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_pa_assignments_specialist ON pa_case_assignments(specialist_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_pa_assignments_supervisor ON pa_case_assignments(supervisor_id)")
 
         document_columns = {
             row["name"] for row in db.execute("PRAGMA table_info(documents)")
@@ -259,6 +459,12 @@ def initialize() -> None:
                 db.execute(
                     f"ALTER TABLE documents ADD COLUMN {name} TEXT DEFAULT '{default}'"
                 )
+        if "submission_id" not in document_columns:
+            db.execute("ALTER TABLE documents ADD COLUMN submission_id TEXT")
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_submission_id "
+            "ON documents(submission_id) WHERE submission_id IS NOT NULL"
+        )
 
         # Add columns if this database was created by an older version.
         columns = {
@@ -283,9 +489,65 @@ def initialize() -> None:
             "source_reference",
             "required_documents",
             "department",
+            "verification_status",
+            "required_categories",
+            "specific_evidence_requirements",
+            "source_url",
+            "authoritative_title",
+            "authoritative_version",
+            "source_verified_by",
+            "source_verified_at",
+            "source_verification_note",
+            "source_requirement_evidence",
         ):
             if name not in policy_columns:
                 db.execute(f"ALTER TABLE policy_documents ADD COLUMN {name} TEXT")
+        feedback_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(evidence_review_feedback)")
+        }
+        if "document_id" not in feedback_columns:
+            db.execute("ALTER TABLE evidence_review_feedback ADD COLUMN document_id INTEGER")
+        if "model_version" not in feedback_columns:
+            db.execute("ALTER TABLE evidence_review_feedback ADD COLUMN model_version TEXT")
+        verification_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(policy_source_verification_attempts)")
+        }
+        for name, definition in (
+            ("authoritative_title", "TEXT NOT NULL DEFAULT ''"),
+            ("authoritative_version", "TEXT NOT NULL DEFAULT ''"),
+            ("source_effective_date", "TEXT"),
+        ):
+            if name not in verification_columns:
+                db.execute(f"ALTER TABLE policy_source_verification_attempts ADD COLUMN {name} {definition}")
+        db.execute("UPDATE policy_documents SET verification_status='MOCK_DEMO' WHERE verification_status IS NULL")
+        # This demo row was labeled public without source-level support for its
+        # prior-therapy/red-flag checklist. Keep the record for audit, but remove
+        # it from active policy retrieval until an authorized source review.
+        downgraded_policy = db.execute(
+            """UPDATE policy_documents
+               SET verification_status='MOCK_DEMO', approved=0,
+                   effective_date='2018-04-10',
+                   source_reference='https://www.cms.gov/medicare-coverage-database/view/ncd.aspx?NCDId=177',
+                   source_url=NULL, authoritative_title=NULL, authoritative_version=NULL,
+                   source_verified_by=NULL, source_verified_at=NULL,
+                   source_verification_note=NULL, source_requirement_evidence=NULL
+               WHERE policy_id='EVD-CMS-MRI' AND version='1.0'
+                 AND (verification_status!='MOCK_DEMO' OR approved!=0
+                      OR effective_date!='2018-04-10'
+                      OR source_url IS NOT NULL OR authoritative_title IS NOT NULL
+                      OR authoritative_version IS NOT NULL OR source_verified_by IS NOT NULL
+                      OR source_verified_at IS NOT NULL OR source_verification_note IS NOT NULL
+                      OR source_requirement_evidence IS NOT NULL)"""
+        )
+        if downgraded_policy.rowcount:
+            db.execute(
+                """INSERT INTO audit_events
+                   (case_id,timestamp,actor,action,detail,decision_type)
+                   VALUES('SYSTEM',datetime('now'),'System migration',
+                   'PAYER_POLICY_VERIFICATION_DOWNGRADED',
+                   'EVD-CMS-MRI v1.0 was retained as unapproved MOCK_DEMO. CMS NCD 220.2 did not substantiate its stored lumbar MRI checklist; source-version date normalized to 2018-04-10 and public-verification metadata cleared.',
+                   'SYSTEM_MIGRATION')"""
+            )
 
         # Seed sample cases and their documents only when the cases table is empty.
         if db.execute("SELECT COUNT(*) AS count FROM cases").fetchone()["count"] == 0:
@@ -348,6 +610,9 @@ def initialize() -> None:
                 "2026-01-01", None, "1.0", 1, "Northstar Health", "Lumbar MRI",
                 "Northstar fictional provider manual §4.2",
                 '["Clinical notes", "Conservative treatment history"]', None,
+                "MOCK_DEMO",
+                '["Clinical Notes", "Treatment History"]',
+                '["Clinical notes", "Conservative treatment history"]',
             ),
             (
                 "EVD-HM-INF", "DOCUMENT_CHECKLIST", "Harbor infusion checklist",
@@ -355,12 +620,28 @@ def initialize() -> None:
                 "2026-01-01", None, "1.0", 1, "Harbor Mutual", "Specialty infusion",
                 "Harbor fictional checklist INF-7",
                 '["Infusion order", "Lab results"]', None,
+                "MOCK_DEMO",
+                '["Other Supporting Evidence", "Laboratory Reports"]',
+                '["Infusion order", "Lab results"]',
             ),
             (
                 "EVD-NS-CT", "CLINICAL_DOCUMENTATION_RULE", "Northstar cardiac CT evidence rule",
                 "For cardiac CT authorization, obtain a specialist letter. A qualified human reviewer must assess clinical evidence.",
                 "2026-01-01", None, "1.0", 1, "Northstar Health", "Cardiac CT",
                 "Northstar fictional guideline CT-3", '["Specialist letter"]', None,
+                "MOCK_DEMO",
+                '["Medical Necessity Documentation"]',
+                '["Specialist letter"]',
+            ),
+            (
+                "EVD-CMS-MRI", "PAYER_REQUIREMENT", "CMS NCD 220.2 MRI scope (draft demo record)",
+                "Draft only. CMS NCD 220.2 is a national MRI coverage policy and does not substantiate this prototype's prior-authorization document checklist. Do not use as an active requirement until each evidence requirement and scope is reviewed against the authoritative source.",
+                "2018-04-10", None, "1.0", 0, "CMS Medicare", "Lumbar MRI",
+                "https://www.cms.gov/medicare-coverage-database/view/ncd.aspx?NCDId=177",
+                '["Clinical documentation of neurological deficit", "Prior conservative therapy records"]', None,
+                "MOCK_DEMO",
+                '["Clinical Notes", "Treatment History"]',
+                '["Clinical documentation of neurological deficit", "Prior conservative therapy records"]',
             ),
         ]
         for record in policy_seeds:
@@ -373,8 +654,9 @@ def initialize() -> None:
                     """INSERT INTO policy_documents
                        (policy_id,document_type,title,content,effective_date,expires_at,
                         version,approved,payer,service_type,source_reference,
-                        required_documents,department)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        required_documents,department,verification_status,
+                        required_categories,specific_evidence_requirements)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     record,
                 )
 

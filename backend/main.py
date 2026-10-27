@@ -1,31 +1,45 @@
 import csv
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import uuid
+from html import unescape
 from datetime import date, datetime, timezone
 from io import StringIO
 from pathlib import Path
 from typing import Literal
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request as UrlRequest, build_opener
 
 import PIL.Image
 import pytesseract
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pdf2image import convert_from_path
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pypdf import PdfReader
 from pytesseract.pytesseract import TesseractNotFoundError
 from pdf2image.exceptions import PDFInfoNotInstalledError
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from agents import run_sla_agent, run_sla_rag
+from approval_api import case_access, current_user, router as approval_router, user_from_authorization
+from case_deadline import InvalidCaseDeadline, validate_case_deadline
+from case_workflow import (
+    WorkflowRetryUnavailableError,
+    case_explanation_status,
+    request_case_explanation,
+    run_case_workflow,
+)
 from evidence_agents import run_evidence_rag
-from evidence_prediction_model import predict_evidence_gaps
+from evidence_prediction_model import EVIDENCE_MODEL_VERSION, predict_evidence_gaps
 from escalation_agents import run_escalation_rag
 from recovery_agents import run_recovery_rag
+from submission_api import router as submission_router
 from database import DOCUMENT_STORAGE_DIR, connect, initialize
 from rag import index_policies, ollama_status
 from sla_risk_model import (
@@ -33,6 +47,8 @@ from sla_risk_model import (
     ModelUnavailableError,
     predict_sla_breach_risk,
 )
+from security import PUBLIC_ROUTES, allowed_roles, enforce_resource_scope
+from services.fastest_safe_path import Plan, build_plan
 
 app = FastAPI(title="PA Guard API", version="0.3.0")
 app.add_middleware(
@@ -42,15 +58,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(approval_router)
+app.include_router(submission_router)
+
+
+@app.middleware("http")
+async def enforce_api_security(request: Request, call_next):
+    path = request.url.path
+    method = request.method.upper()
+    if not path.startswith("/api/") or method == "OPTIONS" or (method, path) in PUBLIC_ROUTES:
+        return await call_next(request)
+    roles = allowed_roles(method, path)
+    if not roles:
+        response = JSONResponse({"detail": "Your role cannot access this API operation"}, status_code=403)
+    else:
+        try:
+            user = user_from_authorization(request.headers.get("authorization"))
+            enforce_resource_scope(user, method, path)
+            if user["role"] not in roles:
+                raise HTTPException(403, "Your role cannot access this API operation")
+        except HTTPException as error:
+            response = JSONResponse({"detail": error.detail}, status_code=error.status_code)
+        else:
+            request.state.current_user = user
+            return await call_next(request)
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["access-control-allow-origin"] = origin
+        response.headers["vary"] = "Origin"
+    return response
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 ALLOWED_CATEGORIES = [
     "Clinical Notes",
+    "Clinical Reports",
     "Imaging Report",
+    "Imaging Reports",
     "Treatment History",
+    "Treatment Reports",
     "Laboratory Reports",
     "Medical Necessity Documentation",
+    "Medical Necessity Documents",
     "Prescription or Medication Records",
+    "Prescription",
     "Other Supporting Evidence",
 ]
 ALLOWED_EXTENSIONS = {
@@ -183,13 +233,58 @@ class CaseCreate(BaseModel):
     deadline: str
     coordinator: str
 
+    @field_validator("deadline")
+    @classmethod
+    def require_unambiguous_deadline(cls, value: str) -> str:
+        try:
+            return validate_case_deadline(value)
+        except InvalidCaseDeadline as error:
+            raise ValueError(str(error)) from error
+
 class CaseUpdate(BaseModel):
-    status: str | None = None
-    coordinator: str | None = None
+    model_config = ConfigDict(extra="forbid")
+    patient_reference: str | None = Field(default=None, min_length=1, max_length=160)
+    payer: str | None = Field(default=None, min_length=1, max_length=120)
+    service: str | None = Field(default=None, min_length=1, max_length=160)
+    deadline: str | None = None
+    priority: str | None = None
+    coordinator: str | None = Field(default=None, min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=1000)
+    expected_values: dict[str, str]
+
+    @field_validator("patient_reference", "payer", "service", "coordinator")
+    @classmethod
+    def nonblank_case_edit_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Case fields cannot be blank")
+        return normalized
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_case_update_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A nonblank correction reason is required")
+        return value.strip()
 
 class HumanAction(BaseModel):
     actor: str
     note: str
+
+class EscalationRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+    explanation: str = Field(min_length=1, max_length=2000)
+    to_staff_id: int | None = None
+    to_role: str | None = None
+
+    @field_validator("reason", "explanation")
+    @classmethod
+    def nonblank_escalation_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Escalation reason and explanation must not be blank")
+        return value.strip()
 
 class AgentRun(BaseModel):
     actor: str = "Current user"
@@ -234,6 +329,8 @@ class PolicyApproval(BaseModel):
     approved: bool
 
 class RequirementCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     requirement_id: str
     document_type: str
     title: str
@@ -269,7 +366,6 @@ class EscalationPolicyCreate(BaseModel):
     expires_at: str | None = None
     version: str
 
-
 class EscalationPolicyUpdate(BaseModel):
     document_type: str
     title: str
@@ -280,7 +376,6 @@ class EscalationPolicyUpdate(BaseModel):
     expires_at: str | None = None
     version: str
 
-
 class RoleAssignmentCreate(BaseModel):
     escalation_level: str
     responsible_role: str
@@ -288,19 +383,17 @@ class RoleAssignmentCreate(BaseModel):
     effective_date: str
     expires_at: str | None = None
 
-
 class RoleAssignmentUpdate(RoleAssignmentCreate):
     pass
-
 
 class EvidenceReviewFeedbackCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     required_evidence: str = Field(min_length=1, max_length=200)
+    document_id: int | None = Field(default=None, gt=0)
     ml_prediction: Literal[
         "PREDICTED_MISSING", "NOT_PREDICTED_MISSING", "UNKNOWN"
     ] | None = None
-
 
 class EvidenceReviewDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -309,6 +402,42 @@ class EvidenceReviewDecision(BaseModel):
     human_outcome: Literal["PRESENT", "MISSING", "UNKNOWN", "NEEDS_REVIEW"] | None = None
     reviewer_identifier: str = Field(min_length=1, max_length=100)
 
+class SourceCriterionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requirement: str = Field(min_length=1, max_length=500)
+    source_location: str = Field(min_length=1, max_length=500)
+    supporting_excerpt: str = Field(min_length=1, max_length=4000)
+
+class SourceVerificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_url: str = Field(min_length=8, max_length=2048)
+    authoritative_title: str = Field(min_length=1, max_length=500)
+    authoritative_version: str = Field(min_length=1, max_length=200)
+    source_effective_date: str | None = None
+    verification_note: str = Field(min_length=10, max_length=2000)
+    requirements_checked_against_source: bool
+    requirement_evidence: list[SourceCriterionEvidence]
+
+    @field_validator("source_url")
+    @classmethod
+    def require_https_source(cls, value: str) -> str:
+        parsed = urlsplit(value.strip())
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Source URL must be an HTTPS URL without embedded credentials")
+        return value.strip()
+
+class SourceVerificationApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=10, max_length=1000)
+
+class EvidenceTrailReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_id: int | None = None
+    assessment_status: Literal["MATCH_POSSIBLE", "NOT_FOUND", "UNCERTAIN", "CONFLICTING"]
+    review_status: Literal["HUMAN_CONFIRMED", "HUMAN_REJECTED"]
+    supporting_excerpt: str = Field(default="", max_length=2000)
+    source_locator: str = Field(default="", max_length=300)
+    review_notes: str = Field(min_length=1, max_length=1000)
 
 def validate_role_assignment(values: dict, assignment_id: int | None = None) -> None:
     required = ("escalation_level", "responsible_role", "department", "effective_date")
@@ -324,19 +453,19 @@ def validate_role_assignment(values: dict, assignment_id: int | None = None) -> 
     if expires and expires < effective:
         raise HTTPException(400, "Retirement date cannot precede the effective date")
     with connect() as db:
-        conflict = db.execute("""SELECT id FROM escalation_role_assignments
+        conflict = db.execute("""
+            SELECT id FROM escalation_role_assignments
             WHERE escalation_level=? AND department=? AND id != ?
             AND effective_date <= COALESCE(?, '9999-12-31')
-            AND COALESCE(expires_at, '9999-12-31') >= ? LIMIT 1""",
+            AND COALESCE(expires_at, '9999-12-31') >= ? LIMIT 1
+        """,
             (values["escalation_level"], values["department"], assignment_id or -1, values["expires_at"], values["effective_date"])).fetchone()
     if conflict:
         raise HTTPException(409, "This assignment overlaps another assignment for the same department and escalation level")
 
-
 def audit(case_id: str, actor: str, action: str, detail: str, decision_type: str="HUMAN") -> None:
     with connect() as db:
         db.execute("INSERT INTO audit_events(case_id,timestamp,actor,action,detail,decision_type) VALUES(?,?,?,?,?,?)", (case_id,datetime.now(timezone.utc).isoformat(),actor,action,detail,decision_type))
-
 
 DOCUMENT_RESPONSE_FIELDS = (
     "id",
@@ -358,15 +487,12 @@ DOCUMENT_RESPONSE_FIELDS = (
     "reviewed_at",
 )
 
-
 def _document_response(document: dict) -> dict:
     return {field: document[field] for field in DOCUMENT_RESPONSE_FIELDS if field in document}
-
 
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "service": "PA Guard API"}
-
 
 @app.get("/api/agents/status")
 def agent_status() -> dict:
@@ -389,16 +515,69 @@ def agent_status() -> dict:
         "ollama": ollama_status(),
     }
 
-
 @app.on_event("startup")
 def startup() -> None:
     initialize()
     index_policies()
 
-@app.get("/api/cases")
-def list_cases() -> list[dict]:
+
+def _authorize_case_workflow(case_id: str, user: dict) -> None:
+    if user["role"] not in {"SPECIALIST", "SUPERVISOR", "MANAGER"}:
+        raise HTTPException(403, "Your role cannot run case workflow analysis")
     with connect() as db:
-        return [dict(row) for row in db.execute("SELECT * FROM cases ORDER BY deadline")]
+        case_access(db, case_id, user)
+
+
+@app.post("/api/agents/cases/{case_id}/workflow")
+def run_case_workflow_endpoint(case_id: str, _payload: AgentRun, user: dict = Depends(current_user)) -> dict:
+    _authorize_case_workflow(case_id, user)
+    try:
+        return run_case_workflow(case_id, user["display_name"])
+    except ValueError as error:
+        raise HTTPException(404, "Case not found") from error
+
+
+@app.post("/api/agents/cases/{case_id}/workflow/retry")
+def retry_case_workflow_endpoint(case_id: str, _payload: AgentRun, user: dict = Depends(current_user)) -> dict:
+    _authorize_case_workflow(case_id, user)
+    try:
+        return run_case_workflow(case_id, user["display_name"], retry_failed_only=True)
+    except WorkflowRetryUnavailableError as error:
+        raise HTTPException(409, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(404, "Case not found") from error
+
+
+@app.get("/api/agents/cases/{case_id}/workflow/explanation")
+async def get_case_explanation(case_id: str, user: dict = Depends(current_user)) -> dict:
+    _authorize_case_workflow(case_id, user)
+    try:
+        return await case_explanation_status(case_id)
+    except ValueError as error:
+        raise HTTPException(404, "Case workflow results not found") from error
+
+
+@app.post("/api/agents/cases/{case_id}/workflow/explanation")
+async def start_case_explanation(case_id: str, user: dict = Depends(current_user)) -> dict:
+    _authorize_case_workflow(case_id, user)
+    try:
+        return await request_case_explanation(case_id)
+    except ValueError as error:
+        raise HTTPException(404, "Case workflow results not found") from error
+
+@app.get("/api/cases")
+def list_cases(user: dict = Depends(current_user)) -> list[dict]:
+    with connect() as db:
+        query = """SELECT c.* FROM cases c
+                   LEFT JOIN pa_case_assignments a ON a.case_id=c.id
+                   WHERE c.status NOT IN ('APPROVED','DENIED')"""
+        params: tuple = ()
+        if user["role"] == "SPECIALIST":
+            query += " AND a.specialist_id=?"; params = (user["id"],)
+        elif user["role"] == "SUPERVISOR":
+            query += " AND a.supervisor_id=?"; params = (user["id"],)
+        query += " ORDER BY c.deadline"
+        return [dict(row) for row in db.execute(query, params)]
 
 @app.post("/api/cases")
 def create_case(payload: CaseCreate) -> dict:
@@ -410,14 +589,28 @@ def create_case(payload: CaseCreate) -> dict:
     return case
 
 @app.patch("/api/cases/{case_id}")
-def update_case(case_id: str, payload: CaseUpdate) -> dict:
-    changes = payload.model_dump(exclude_none=True)
-    if not changes: raise HTTPException(400,"No changes supplied")
+def update_case(case_id: str, payload: CaseUpdate, user: dict = Depends(current_user)) -> dict:
+    values = payload.model_dump(exclude={"reason", "expected_values"}, exclude_none=True)
+    if not values: raise HTTPException(400,"No changes supplied")
+    if set(payload.expected_values) != set(values):
+        raise HTTPException(422, "expected_values must include exactly the fields being corrected")
+    if "deadline" in values:
+        try:
+            parsed_deadline = datetime.fromisoformat(values["deadline"].replace("Z", "+00:00"))
+        except (TypeError, ValueError) as error:
+            raise HTTPException(422, "Deadline must be a valid ISO-8601 timestamp with timezone") from error
+        if parsed_deadline.tzinfo is None:
+            raise HTTPException(422, "Deadline must include a timezone")
+    if "priority" in values and values["priority"] not in {"LOW", "MEDIUM", "HIGH"}:
+        raise HTTPException(422, "Priority must be LOW, MEDIUM, or HIGH")
     with connect() as db:
-        if not db.execute("SELECT id FROM cases WHERE id=?",(case_id,)).fetchone(): raise HTTPException(404,"Case not found")
-        for field,value in changes.items(): db.execute(f"UPDATE cases SET {field}=? WHERE id=?",(value,case_id))
+        current = db.execute("SELECT * FROM cases WHERE id=?",(case_id,)).fetchone()
+        if not current: raise HTTPException(404,"Case not found")
+        if any(current[field] != expected for field, expected in payload.expected_values.items()):
+            raise HTTPException(409,"Case changed since it was opened; refresh before saving")
+        for field,value in values.items(): db.execute(f"UPDATE cases SET {field}=? WHERE id=?",(value,case_id))
         updated = dict(db.execute("SELECT * FROM cases WHERE id=?",(case_id,)).fetchone())
-    audit(case_id,"Current user","CASE_UPDATED",str(changes))
+    audit(case_id,user["username"],"CASE_UPDATED",json.dumps({"reason":payload.reason,"before":payload.expected_values,"after":values},sort_keys=True))
     return updated
 
 @app.get("/api/cases/{case_id}")
@@ -427,6 +620,136 @@ def case_detail(case_id: str) -> dict:
         if not case: raise HTTPException(404,"Case not found")
         documents = [_document_response(dict(row)) for row in db.execute("SELECT * FROM documents WHERE case_id=?",(case_id,))]
     return {"case":dict(case),"documents":documents,"agent_status":"SLA RAG CONNECTED — RECOMMENDATION ONLY"}
+
+
+@app.get("/api/cases/{case_id}/fastest-safe-path")
+def fastest_safe_path(case_id: str, user: dict = Depends(current_user)) -> Plan:
+    """Read-only plan; existing middleware and case_access enforce scope first."""
+    audit_enabled = True
+    with connect() as db:
+        case = case_access(db, case_id, user)
+        documents = [dict(row) for row in db.execute(
+            "SELECT id,name,status,category,processing_status,ocr_status FROM documents WHERE case_id=? ORDER BY id", (case_id,)
+        )]
+        policies = db.execute("SELECT * FROM policy_documents WHERE payer=? ORDER BY effective_date DESC,policy_id,version DESC", (case["payer"],)).fetchall()
+        applicable = [p for p in policies if not p["service_type"] or p["service_type"].casefold() in case["service"].casefold() or case["service"].casefold() in p["service_type"].casefold()]
+        policy = next((p for p in applicable if p["approved"] and p["verification_status"] == "VERIFIED_PUBLIC"), applicable[0] if applicable else None)
+        policy_state = "UNKNOWN" if policy is None else "UNVERIFIED"
+        criteria_states = []
+        if policy is not None:
+            policy_state = "VERIFIED" if policy["approved"] and policy["verification_status"] == "VERIFIED_PUBLIC" else ("UNSUPPORTED" if policy["verification_status"] == "UNSUPPORTED" else "UNVERIFIED")
+            criteria = db.execute("SELECT * FROM policy_criteria WHERE policy_id=? AND policy_version=? ORDER BY criterion_id", (policy["policy_id"], policy["version"])).fetchall()
+            for criterion in criteria:
+                review = db.execute("SELECT * FROM case_evidence_reviews WHERE case_id=? AND policy_id=? AND policy_version=? AND criterion_id=? ORDER BY id DESC LIMIT 1", (case_id, policy["policy_id"], policy["version"], criterion["criterion_id"])).fetchone()
+                if criterion["verification_status"] not in {"VERIFIED_PUBLIC", "VERIFIED"}:
+                    status_value = "UNSUPPORTED_CRITERION" if criterion["verification_status"] == "UNSUPPORTED" else "UNKNOWN"
+                elif review is None:
+                    status_value = "UNKNOWN"
+                elif review["review_status"] == "HUMAN_CONFIRMED":
+                    status_value = "HUMAN_CONFIRMED"
+                elif review["review_status"] == "HUMAN_REJECTED":
+                    status_value = "NO_MATCH" if review["assessment_status"] == "NOT_FOUND" else "UNCERTAIN"
+                elif review["assessment_status"] == "MATCH_POSSIBLE":
+                    status_value = "MATCH_POSSIBLE"
+                elif review["assessment_status"] == "NOT_FOUND":
+                    status_value = "NO_MATCH"
+                else:
+                    status_value = "UNCERTAIN"
+                criteria_states.append({"criterion_id": criterion["criterion_id"], "status": status_value, "document_id": review["document_id"] if review else None})
+        else:
+            criteria_states = []
+        readiness = db.execute("SELECT status,version FROM pa_submission_readiness WHERE case_id=?", (case_id,)).fetchone()
+        approval = db.execute("SELECT readiness_version FROM pa_submission_approvals WHERE case_id=?", (case_id,)).fetchone()
+        approval_state = "APPROVED_FOR_SUBMISSION" if approval and readiness and approval["readiness_version"] == readiness["version"] else ("PENDING_MANAGER_APPROVAL" if readiness and readiness["status"] == "READY_FOR_REVIEW" else None)
+        config_path = Path(__file__).resolve().parent / "config" / "fastest_safe_path.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            audit_enabled = bool(config.get("audit_enabled", True))
+            plan = build_plan(dict(case) | {"policy_id": policy["policy_id"] if policy else None, "approval_state": approval_state}, criteria_states, documents, policy_state, user["role"], datetime.now(timezone.utc), config)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            raise HTTPException(503, "Fastest Safe Path configuration or case data is unavailable") from error
+    if audit_enabled:
+        audit(case_id, user["username"], "PLAN_GENERATED", json.dumps({"verdict": plan.verdict, "step_count": len(plan.steps)}, sort_keys=True), "SYSTEM_RECOMMENDATION")
+    return plan
+
+
+@app.get("/api/cases/{case_id}/evidence-trail")
+def get_case_evidence_trail(case_id: str) -> dict:
+    with connect() as db:
+        case = db.execute("SELECT id,payer,service FROM cases WHERE id=?", (case_id,)).fetchone()
+        if not case:
+            raise HTTPException(404, "Case not found")
+        policies = db.execute(
+            """SELECT policy_id,version,title,service_type,verification_status
+               FROM policy_documents WHERE approved=1 AND verification_status='VERIFIED_PUBLIC'
+                 AND payer=? ORDER BY effective_date DESC, policy_id, version DESC""",
+            (case["payer"],),
+        ).fetchall()
+        applicable = [p for p in policies if not p["service_type"] or p["service_type"].casefold() in case["service"].casefold() or case["service"].casefold() in p["service_type"].casefold()]
+        if not applicable:
+            return {"case_id": case_id, "available": False, "policy": None, "criteria": [], "message": "No applicable verified public policy is available; policy-dependent evidence requirements remain unavailable and require human review."}
+        policy = dict(applicable[0])
+        rows = db.execute(
+            """SELECT c.*,r.id AS review_id,r.document_id,r.assessment_status,r.review_status,
+                      r.reviewer_id,r.reviewed_at,r.review_notes,r.source_locator AS reviewed_locator,
+                      r.supporting_excerpt AS reviewed_excerpt,r.audit_event_id
+               FROM policy_criteria c LEFT JOIN case_evidence_reviews r
+                 ON r.policy_id=c.policy_id AND r.policy_version=c.policy_version
+                 AND r.criterion_id=c.criterion_id AND r.case_id=?
+               WHERE c.policy_id=? AND c.policy_version=? AND c.verification_status='VERIFIED_PUBLIC'
+               ORDER BY c.criterion_id""",
+            (case_id, policy["policy_id"], policy["version"]),
+        ).fetchall()
+        criteria = [dict(row) for row in rows]
+        docs = [dict(row) for row in db.execute(
+            "SELECT id,name,category,ocr_status,processing_status FROM documents WHERE case_id=? ORDER BY id", (case_id,)
+        )]
+    return {"case_id": case_id, "available": bool(criteria), "policy": policy, "criteria": criteria, "documents": docs,
+            "message": "Machine text extraction is unverified; every criterion assessment requires human review." if criteria else "Policy is verified, but no criterion-level provenance is available; human review is required."}
+
+
+@app.post("/api/cases/{case_id}/evidence-trail/{criterion_id}/review")
+def review_case_evidence(case_id: str, criterion_id: str, payload: EvidenceTrailReview, user: dict = Depends(current_user)) -> dict:
+    if user["role"] not in {"SUPERVISOR", "MANAGER"}:
+        raise HTTPException(403, "A supervisor or manager must review policy evidence")
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as db:
+        case = db.execute("SELECT payer,service FROM cases WHERE id=?", (case_id,)).fetchone()
+        if not case:
+            raise HTTPException(404, "Case not found")
+        criterion = db.execute(
+            """SELECT c.* FROM policy_criteria c JOIN policy_documents p
+                 ON p.policy_id=c.policy_id AND p.version=c.policy_version
+               WHERE c.criterion_id=? AND c.verification_status='VERIFIED_PUBLIC'
+                 AND p.approved=1 AND p.verification_status='VERIFIED_PUBLIC' AND p.payer=?
+               ORDER BY p.effective_date DESC LIMIT 1""",
+            (criterion_id, case["payer"]),
+        ).fetchone()
+        if not criterion:
+            raise HTTPException(404, "Verified policy criterion not found for this case")
+        document_text = ""
+        if payload.document_id is not None:
+            document = db.execute("SELECT extracted_text,page_text FROM documents WHERE id=? AND case_id=?", (payload.document_id, case_id)).fetchone()
+            if not document:
+                raise HTTPException(404, "Document not found for this case")
+            document_text = (document["extracted_text"] or "") + " " + (document["page_text"] or "")
+        if payload.supporting_excerpt and payload.supporting_excerpt.casefold() not in document_text.casefold():
+            raise HTTPException(422, "The excerpt must appear in the selected document's extracted text; OCR remains unverified evidence")
+        db.execute(
+            """INSERT INTO case_evidence_reviews(case_id,policy_id,policy_version,criterion_id,document_id,
+               assessment_status,review_status,reviewer_id,reviewed_at,review_notes,source_locator,supporting_excerpt,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (case_id, criterion["policy_id"], criterion["policy_version"], criterion_id, payload.document_id,
+             payload.assessment_status, payload.review_status, user["username"], now, payload.review_notes.strip(),
+             payload.source_locator.strip(), payload.supporting_excerpt.strip(), now),
+        )
+        review_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("INSERT INTO audit_events(case_id,timestamp,actor,action,detail,decision_type) VALUES(?,?,?,?,?,?)",
+                   (case_id, now, user["username"], "CASE_EVIDENCE_REVIEWED", json.dumps({"review_id": review_id, "policy_id": criterion["policy_id"], "policy_version": criterion["policy_version"], "criterion_id": criterion_id, "review_status": payload.review_status}, sort_keys=True), "HUMAN_POLICY_REVIEW"))
+        event_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("UPDATE case_evidence_reviews SET audit_event_id=? WHERE id=?", (event_id, review_id))
+        result = dict(db.execute("SELECT * FROM case_evidence_reviews WHERE id=?", (review_id,)).fetchone())
+    return result
 
 
 @app.get("/api/cases/{case_id}/sla-risk-prediction")
@@ -498,8 +821,14 @@ def list_case_documents(case_id: str) -> list[dict]:
 
 
 @app.get("/api/documents")
-def list_documents() -> list[dict]:
-    with connect() as db: return [_document_response(dict(row)) for row in db.execute("SELECT * FROM documents ORDER BY case_id,id")]
+def list_documents(user: dict = Depends(current_user)) -> list[dict]:
+    with connect() as db:
+        if user["role"] == "MANAGER":
+            rows = db.execute("SELECT * FROM documents ORDER BY case_id,id").fetchall()
+        else:
+            column = "specialist_id" if user["role"] == "SPECIALIST" else "supervisor_id"
+            rows = db.execute(f"SELECT d.* FROM documents d JOIN pa_case_assignments a ON a.case_id=d.case_id WHERE a.{column}=? ORDER BY d.case_id,d.id", (user["id"],)).fetchall()
+        return [_document_response(dict(row)) for row in rows]
 
 
 @app.get("/api/documents/{document_id}")
@@ -520,11 +849,42 @@ def get_document_text(document_id: int) -> dict:
     return {"document_id": document_id, "case_id": document["case_id"], "text": document["extracted_text"] or ""}
 
 
+def _authorize_document_upload(case_id: str, user: dict) -> None:
+    if user["role"] not in {"SPECIALIST", "SUPERVISOR", "MANAGER"}:
+        raise HTTPException(403, "Your role cannot upload case documents")
+    try:
+        with connect() as db:
+            case_access(db, case_id, user)
+    except HTTPException as error:
+        if error.status_code == 403 and user["role"] in {"SPECIALIST", "SUPERVISOR"}:
+            raise HTTPException(404, "Case not found") from error
+        raise
+
+
 @app.post("/api/cases/{case_id}/documents")
-async def upload_document(case_id: str, file: UploadFile = File(...), category: str = Form(...)) -> dict:
+async def upload_document(
+    case_id: str,
+    file: UploadFile = File(...),
+    category: str = Form(...),
+    submission_id: str | None = Form(None),
+    user: dict = Depends(current_user),
+) -> dict:
+    _authorize_document_upload(case_id, user)
+    if submission_id is not None:
+        submission_id = submission_id.strip()
+        if not submission_id or len(submission_id) > 100:
+            raise HTTPException(400, "Submission ID must contain 1 to 100 characters")
     with connect() as db:
         if not db.execute("SELECT id FROM cases WHERE id=?", (case_id,)).fetchone():
             raise HTTPException(404, "Case not found")
+        if submission_id:
+            existing = db.execute(
+                "SELECT * FROM documents WHERE submission_id=?", (submission_id,)
+            ).fetchone()
+            if existing:
+                if existing["case_id"] != case_id:
+                    raise HTTPException(409, "Submission ID is already used for another case")
+                return _document_response(dict(existing))
         if category not in ALLOWED_CATEGORIES:
             raise HTTPException(400, "Unsupported document category")
 
@@ -557,7 +917,7 @@ async def upload_document(case_id: str, file: UploadFile = File(...), category: 
     with connect() as db:
         try:
             cursor = db.execute(
-                "INSERT INTO documents(case_id,name,status,category,original_filename,stored_filename,file_path,mime_type,file_size,uploaded_at,processing_status,ocr_status,processing_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO documents(case_id,name,status,category,original_filename,stored_filename,file_path,mime_type,file_size,uploaded_at,processing_status,ocr_status,processing_error,submission_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     case_id,
                     category,
@@ -572,6 +932,7 @@ async def upload_document(case_id: str, file: UploadFile = File(...), category: 
                     "UPLOADED",
                     "PENDING",
                     "",
+                    submission_id,
                 ),
             )
             document_id = cursor.lastrowid
@@ -581,6 +942,66 @@ async def upload_document(case_id: str, file: UploadFile = File(...), category: 
     return await run_in_threadpool(process_document, document_id)
 
 
+@app.post("/api/cases/{case_id}/documents/batch")
+async def upload_documents_batch(
+    case_id: str,
+    files: list[UploadFile] = File(default=[]),
+    categories: list[str] = Form(default=[]),
+    submission_ids: list[str] = Form(default=[]),
+    user: dict = Depends(current_user),
+) -> dict:
+    if not files:
+        raise HTTPException(400, "Select at least one document")
+    if len(files) != len(categories) or len(files) != len(submission_ids):
+        raise HTTPException(400, "Each file requires one category and one submission ID")
+    normalized_ids = [submission_id.strip() for submission_id in submission_ids]
+    if any(not submission_id or len(submission_id) > 100 for submission_id in normalized_ids):
+        raise HTTPException(400, "Each submission ID must contain 1 to 100 characters")
+    if len(set(normalized_ids)) != len(normalized_ids):
+        raise HTTPException(400, "Submission IDs in a batch must be unique")
+
+    _authorize_document_upload(case_id, user)
+    documents: list[dict] = []
+    failures: list[dict] = []
+    saved_submission_ids: list[str] = []
+    for file, category, submission_id in zip(files, categories, normalized_ids):
+        try:
+            document = await upload_document(case_id, file, category, submission_id, user)
+        except HTTPException as error:
+            failures.append({
+                "filename": file.filename or "",
+                "submission_id": submission_id,
+                "status_code": error.status_code,
+                "message": str(error.detail),
+            })
+        except Exception as error:
+            failures.append({
+                "filename": file.filename or "",
+                "submission_id": submission_id,
+                "status_code": 500,
+                "message": f"Document processing failed ({type(error).__name__})",
+            })
+        else:
+            documents.append(document)
+            saved_submission_ids.append(submission_id)
+            if document.get("ocr_status") != "COMPLETED":
+                failures.append({
+                    "filename": file.filename or "",
+                    "submission_id": submission_id,
+                    "status_code": 422,
+                    "message": document.get("processing_error") or "OCR did not complete; human review is required.",
+                })
+
+    return {
+        "case_id": case_id,
+        "documents": documents,
+        "saved_submission_ids": saved_submission_ids,
+        "failures": failures,
+        "partial_success": bool(documents and failures),
+        "all_succeeded": bool(files) and not failures and len(documents) == len(files),
+    }
+
+
 @app.post("/api/documents/{document_id}/process")
 def process_document(document_id: int) -> dict:
     with connect() as db:
@@ -588,7 +1009,7 @@ def process_document(document_id: int) -> dict:
         if not document:
             raise HTTPException(404, "Document not found")
         db.execute(
-            "UPDATE documents SET status='RECEIVED', processing_status='PROCESSING', ocr_status='PROCESSING', processing_error='' WHERE id=?",
+            "UPDATE documents SET status='RECEIVED', processing_status='PROCESSING', ocr_status='PROCESSING', processing_error='', extracted_text='', page_text='[]' WHERE id=?",
             (document_id,),
         )
 
@@ -605,44 +1026,113 @@ def process_document(document_id: int) -> dict:
                 "UPDATE documents SET status='RECEIVED', processing_status='OCR_COMPLETED', ocr_status='COMPLETED', processed_at=?, extracted_text=?, page_text=?, processing_error='' WHERE id=?",
                 (now, extracted_text, json.dumps(page_text), document_id),
             )
-        try:
-            evidence = run_evidence_rag(document["case_id"])
-        except Exception as error:
-            evidence = {
-                "verification_status": "NEEDS_REVIEW",
-                "possible_mismatches": [f"Evidence Agent could not complete its review: {error}"],
-                "recommended_action": "Retry the Evidence Agent or route the uploaded document to a human evidence reviewer.",
-                "needs_human_review": True,
-            }
         status = "REVIEW_REQUIRED"
         with connect() as db:
             db.execute(
-                "UPDATE documents SET status=?, evidence_summary=? WHERE id=?",
-                (status, json.dumps(evidence, sort_keys=True), document_id),
+                "UPDATE documents SET status=?, evidence_summary=NULL WHERE id=?",
+                (status, document_id),
             )
         with connect() as db:
             return _document_response(dict(db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()))
     except Exception as error:
+        error_text = str(error)
+        if "Tesseract OCR is unavailable." in error_text or "Scanned PDF OCR requires Poppler." in error_text:
+            safe_error = error_text
+        elif "No readable text" in error_text:
+            safe_error = "No readable text could be extracted from the document. Retry or request human review."
+        else:
+            safe_error = (
+                "The document could not be read or text extraction failed. Verify that it is "
+                "a valid, unencrypted PDF or image, then retry or request human review."
+            )
         with connect() as db:
             db.execute(
-                "UPDATE documents SET status='REVIEW_REQUIRED', processing_status='OCR_FAILED', ocr_status='FAILED', processed_at=?, processing_error=?, reviewed_by='System' WHERE id=?",
-                (datetime.now(timezone.utc).isoformat(), str(error), document_id),
+                "UPDATE documents SET status='REVIEW_REQUIRED', processing_status='OCR_FAILED', ocr_status='FAILED', processed_at=?, extracted_text='', page_text='[]', processing_error=?, reviewed_by='System' WHERE id=?",
+                (datetime.now(timezone.utc).isoformat(), safe_error, document_id),
             )
             return _document_response(dict(db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()))
 
 @app.post("/api/documents/{document_id}/verify")
-def verify_document(document_id: int, payload: HumanAction) -> dict:
+def verify_document(document_id: int, payload: HumanAction, user: dict = Depends(current_user)) -> dict:
     with connect() as db:
         document = db.execute("SELECT * FROM documents WHERE id=?",(document_id,)).fetchone()
         if not document: raise HTTPException(404,"Document not found")
-        db.execute("UPDATE documents SET status='VERIFIED',reviewed_by=?,reviewed_at=? WHERE id=?",(payload.actor,datetime.now(timezone.utc).isoformat(),document_id))
-    audit(document["case_id"],payload.actor,"EVIDENCE_VERIFIED",payload.note,"HUMAN_CLINICAL_REVIEW")
+        if document["status"] == "MISSING": raise HTTPException(409,"Missing documents cannot be verified")
+        if document["status"] == "VERIFIED": raise HTTPException(409,"Document is already verified")
+        reviewed_at = datetime.now(timezone.utc).isoformat()
+        db.execute("UPDATE documents SET status='VERIFIED',reviewed_by=?,reviewed_at=? WHERE id=?",(user["username"],reviewed_at,document_id))
+    audit(document["case_id"],user["username"],"EVIDENCE_VERIFIED",payload.note,"HUMAN_CLINICAL_REVIEW")
     return {"ok":True}
 
 @app.post("/api/cases/{case_id}/escalate")
-def escalate(case_id: str, payload: HumanAction) -> dict:
-    audit(case_id,payload.actor,"CASE_ESCALATED",payload.note,"HUMAN_OPERATIONAL_DECISION")
-    return {"ok":True}
+def escalate(case_id: str, payload: EscalationRequest, user: dict = Depends(current_user)) -> dict:
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        case = case_access(db, case_id, user)
+        assignments = db.execute("SELECT * FROM pa_case_assignments WHERE case_id=?", (case_id,)).fetchone()
+        destination_role = "SUPERVISOR" if user["role"] == "SPECIALIST" else "MANAGER"
+        assignment_column = "supervisor_id" if destination_role == "SUPERVISOR" else "manager_id"
+        duplicate = db.execute("SELECT id FROM pa_escalations WHERE case_id=? AND status='ROUTED'", (case_id,)).fetchone()
+        if duplicate:
+            raise HTTPException(409, "An escalation is already awaiting review")
+        if payload.reason.casefold() in {"not a reason", "no reason", "n/a", "none"}:
+            raise HTTPException(422, "Escalation reason must describe the operational issue")
+        if case["status"] in {"APPROVED", "DENIED"}:
+            raise HTTPException(409, "Resolved cases cannot be escalated")
+        if destination_role == "SUPERVISOR":
+            allowed_states = {"NEW", "SPECIALIST_REVIEW", "RETURNED_TO_SPECIALIST", "INTAKE REVIEW", "EVIDENCE REVIEW", "MORE INFORMATION REQUIRED"}
+            next_status = "AWAITING_SUPERVISOR"
+        else:
+            allowed_states = {"AWAITING_SUPERVISOR"}
+            next_status = "AWAITING_MANAGER"
+        if case["status"] not in allowed_states:
+            raise HTTPException(409, f"Case cannot be escalated from {case['status']}")
+
+        current_staff_id = assignments[assignment_column] if assignments else None
+        candidates = db.execute(
+            "SELECT * FROM pa_staff WHERE role=? AND active=1 AND available=1 ORDER BY id",
+            (destination_role,),
+        ).fetchall()
+        eligible = []
+        for candidate in candidates:
+            service_types = json.loads(candidate["service_types"] or "[]")
+            if service_types and case["service"] not in service_types:
+                continue
+            open_count = db.execute(
+                f"SELECT COUNT(*) n FROM pa_case_assignments a JOIN cases c ON c.id=a.case_id WHERE a.{assignment_column}=? AND c.status NOT IN ('APPROVED','DENIED')",
+                (candidate["id"],),
+            ).fetchone()["n"]
+            already_assigned = candidate["id"] == current_staff_id
+            if open_count < candidate["max_workload"] or (already_assigned and open_count <= candidate["max_workload"]):
+                eligible.append((candidate, open_count))
+        if not eligible:
+            raise HTTPException(409, f"No available {destination_role.title()} can receive this case")
+        recipient, _ = min(eligible, key=lambda item: (item[0]["id"] != current_staff_id, item[1], item[0]["id"]))
+        destination_id = recipient["id"]
+        stamp = datetime.now(timezone.utc).isoformat()
+        if not assignments:
+            db.execute("INSERT INTO pa_case_assignments(case_id,updated_at) VALUES(?,?)", (case_id, stamp))
+        db.execute(
+            f"UPDATE pa_case_assignments SET {assignment_column}=?,updated_at=? WHERE case_id=?",
+            (destination_id, stamp, case_id),
+        )
+        db.execute("UPDATE cases SET status=? WHERE id=?", (next_status, case_id))
+        db.execute(
+            "INSERT INTO pa_reviews(case_id,actor_id,action,reason,old_status,new_status,created_at) VALUES(?,?,?,?,?,?,?)",
+            (case_id, user["id"], f"ESCALATE_TO_{destination_role}", payload.reason, case["status"], next_status, stamp),
+        )
+        cursor = db.execute("""INSERT INTO pa_escalations
+            (case_id,from_staff_id,from_role,to_staff_id,to_role,reason,explanation,status,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,'ROUTED',?,?)""",
+            (case_id,user["id"],user["role"],destination_id,destination_role,payload.reason,payload.explanation,stamp,stamp))
+        db.execute("""INSERT INTO pa_assignment_history
+            (case_id,actor_id,from_staff_id,to_staff_id,role,reason,created_at)
+            VALUES(?,?,?,?,?,?,?)""",
+            (case_id,user["id"],user["id"],destination_id,destination_role,payload.reason,stamp))
+        db.execute("INSERT INTO audit_events(case_id,timestamp,actor,action,detail,decision_type) VALUES(?,?,?,?,?,?)",
+            (case_id,stamp,user["display_name"],"CASE_ESCALATED",json.dumps({"reason":payload.reason,"from_status":case["status"],"to_status":next_status,"to_role":destination_role,"to_staff_id":destination_id},sort_keys=True),"HUMAN_OPERATIONAL_DECISION"))
+        escalation_id = cursor.lastrowid
+    return {"id":escalation_id,"case_id":case_id,"to_staff_id":destination_id,"to_staff_name":recipient["display_name"],"to_role":destination_role,"status":"ROUTED","case_status":next_status,"delivery_status":"RECORDED"}
 
 @app.get("/api/settings")
 def get_settings() -> dict:
@@ -675,6 +1165,17 @@ def reindex_policies(payload: AgentRun) -> dict:
     audit("SYSTEM",payload.actor,"SLA_POLICY_INDEXED",f"Indexed {result['indexed']} approved policies using {result['embedding_engine']}.","HUMAN_OPERATIONAL_DECISION")
     return result
 
+
+@app.get("/api/sla-risk-model-card")
+def get_sla_risk_model_card() -> dict:
+    model_card_path = Path(__file__).parent / "model_card.json"
+    if not model_card_path.is_file():
+        raise HTTPException(503, "Synthetic SLA model card is not available.")
+    try:
+        return json.loads(model_card_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise HTTPException(503, "Synthetic SLA model card could not be loaded.") from error
+
 @app.post("/api/agents/sla/cases/{case_id}/recommend")
 
 def recommend_case(case_id: str, payload: AgentRun) -> dict:
@@ -697,17 +1198,24 @@ def evaluate_escalation(case_id: str, payload: AgentRun) -> dict:
         raise HTTPException(404, str(error)) from error
 
 @app.get("/api/workflow-failures")
-def list_workflow_failures() -> list[dict]:
+def list_workflow_failures(user: dict = Depends(current_user)) -> list[dict]:
     with connect() as db:
-        return [dict(row) for row in db.execute("SELECT * FROM workflow_failures ORDER BY occurred_at DESC")]
+        if user["role"] == "MANAGER":
+            rows = db.execute("SELECT * FROM workflow_failures ORDER BY occurred_at DESC").fetchall()
+        else:
+            assignment_column = "specialist_id" if user["role"] == "SPECIALIST" else "supervisor_id"
+            rows = db.execute(f"SELECT f.* FROM workflow_failures f JOIN pa_case_assignments a ON a.case_id=f.case_id WHERE a.{assignment_column}=? ORDER BY f.occurred_at DESC", (user["id"],)).fetchall()
+        return [dict(row) for row in rows]
 
 
 @app.post("/api/agents/recovery/cases/{case_id}/recover")
-def recover_case(case_id: str, payload: RecoveryRun) -> dict:
+def recover_case(case_id: str, payload: RecoveryRun, user: dict = Depends(current_user)) -> dict:
+    if user["role"] == "SPECIALIST" and (payload.approve_recovery or not payload.preview_only):
+        raise HTTPException(403, "Specialists may request preview-only recovery recommendations")
     try:
         result = run_recovery_rag(
             case_id,
-            payload.actor,
+            user["username"],
             payload.error_code,
             payload.approve_recovery,
             payload.preview_only,
@@ -816,13 +1324,20 @@ def submit_evidence_review_feedback(
         ).fetchone()
         if not case:
             raise HTTPException(404, "Case not found")
+        if payload.document_id is not None and not db.execute(
+            "SELECT id FROM documents WHERE id=? AND case_id=?",
+            (payload.document_id, case_id),
+        ).fetchone():
+            raise HTTPException(404, "Document not found for this case")
         _validate_required_evidence_for_case(db, case, required_evidence)
         cursor = db.execute(
             """INSERT INTO evidence_review_feedback
-               (case_id,required_evidence,ml_prediction,human_outcome,review_status,created_at)
-               VALUES(?,?,?,'UNKNOWN','PENDING',?)""",
+               (case_id,document_id,model_version,required_evidence,ml_prediction,human_outcome,review_status,created_at)
+               VALUES(?,?,?,?,?,'UNKNOWN','PENDING',?)""",
             (
                 case_id,
+                payload.document_id,
+                EVIDENCE_MODEL_VERSION,
                 required_evidence,
                 payload.ml_prediction,
                 datetime.now(timezone.utc).isoformat(),
@@ -852,11 +1367,9 @@ def list_evidence_review_feedback(case_id: str) -> list[dict]:
 
 @app.post("/api/evidence-review-feedback/{feedback_id}/review")
 def review_evidence_feedback(
-    feedback_id: int, payload: EvidenceReviewDecision
+    feedback_id: int, payload: EvidenceReviewDecision, user: dict = Depends(current_user)
 ) -> dict:
-    reviewer_identifier = payload.reviewer_identifier.strip()
-    if not reviewer_identifier:
-        raise HTTPException(422, "Reviewer identifier cannot be blank")
+    reviewer_identifier = user["username"]
     if payload.review_status == "CONFIRMED" and payload.human_outcome is None:
         raise HTTPException(422, "A confirmed review requires a human-reviewed outcome")
     if payload.review_status == "REJECTED" and payload.human_outcome is not None:
@@ -968,7 +1481,189 @@ def create_policy(payload: PolicyCreate) -> dict:
 @app.get("/api/payer-requirements")
 def list_payer_requirements() -> list[dict]:
     with connect() as db:
-        return [dict(row) for row in db.execute("SELECT policy_id AS requirement_id,document_type,title,content,effective_date,expires_at,version,approved,embedding_engine,payer,service_type,source_reference,required_documents FROM policy_documents WHERE document_type IN ('PAYER_REQUIREMENT','DOCUMENT_CHECKLIST','CLINICAL_DOCUMENTATION_RULE','AUTHORIZATION_GUIDELINE') ORDER BY payer,service_type,policy_id,version DESC")]
+        return [dict(row) for row in db.execute("SELECT policy_id AS requirement_id,document_type,title,content,effective_date,expires_at,version,approved,embedding_engine,payer,service_type,source_reference,required_documents,verification_status FROM policy_documents WHERE document_type IN ('PAYER_REQUIREMENT','DOCUMENT_CHECKLIST','CLINICAL_DOCUMENTATION_RULE','AUTHORIZATION_GUIDELINE') ORDER BY payer,service_type,policy_id,version DESC")]
+
+
+class _NoPolicyRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _policy_source_host_allowed(host: str) -> bool:
+    configured = os.getenv("PA_GUARD_POLICY_SOURCE_DOMAINS", "cms.gov")
+    domains = {item.strip().lower().lstrip(".") for item in configured.split(",") if item.strip()}
+    normalized = host.lower().rstrip(".")
+    return any(normalized == domain or normalized.endswith(f".{domain}") for domain in domains)
+
+
+def _fetch_policy_source(source_url: str) -> tuple[str, str]:
+    """Fetch bounded public policy text from explicitly trusted HTTPS domains."""
+    parsed = urlsplit(source_url)
+    if parsed.scheme != "https" or not parsed.hostname or not _policy_source_host_allowed(parsed.hostname):
+        raise ValueError("Source host is not in PA_GUARD_POLICY_SOURCE_DOMAINS")
+    opener = build_opener(_NoPolicyRedirect())
+    request = UrlRequest(source_url, headers={"User-Agent": "PA-Guard-Policy-Review/1.0", "Accept": "text/html,text/plain,application/pdf"})
+    try:
+        with opener.open(request, timeout=8) as response:
+            content_type = response.headers.get_content_type()
+            body = response.read(2_000_001)
+    except (HTTPError, URLError, TimeoutError, OSError) as error:
+        raise RuntimeError("The authoritative source could not be retrieved safely.") from error
+    if len(body) > 2_000_000:
+        raise RuntimeError("The authoritative source exceeded the 2 MB review limit.")
+    if content_type == "application/pdf" or parsed.path.lower().endswith(".pdf"):
+        try:
+            reader = PdfReader(__import__("io").BytesIO(body))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception as error:
+            raise RuntimeError("The authoritative PDF could not be parsed safely.") from error
+    elif content_type in {"text/html", "text/plain", "application/xhtml+xml"}:
+        text = body.decode("utf-8", errors="replace")
+        text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = unescape(text)
+    else:
+        raise RuntimeError("The authoritative source has an unsupported content type.")
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        raise RuntimeError("The authoritative source did not contain extractable text.")
+    return normalized, hashlib.sha256(body).hexdigest()
+
+
+def _source_attempt_audit(db, policy_id: str, version: str, actor: str, now: str, status: str, detail: str) -> None:
+    db.execute(
+        "INSERT INTO audit_events(case_id,timestamp,actor,action,detail,decision_type) VALUES('SYSTEM',?,?,?,?,?)",
+        (now, actor, "POLICY_SOURCE_VERIFICATION_ATTEMPT", json.dumps({"policy_id": policy_id, "version": version, "status": status, "detail": detail}, sort_keys=True), "POLICY_VERIFICATION"),
+    )
+
+
+@app.post("/api/payer-requirements/{requirement_id}/{version}/verify-source", status_code=202)
+def verify_requirement_source(requirement_id: str, version: str, payload: SourceVerificationRequest, user: dict = Depends(current_user)) -> dict:
+    if user["role"] not in {"ADMIN", "MANAGER"}:
+        raise HTTPException(403, "A manager or policy administrator must initiate source verification")
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as db:
+        policy_row = db.execute("SELECT * FROM policy_documents WHERE policy_id=? AND version=?", (requirement_id, version)).fetchone()
+        if not policy_row:
+            _source_attempt_audit(db, requirement_id, version, user["username"], now, "POLICY_NOT_FOUND", "No matching policy version exists.")
+            db.commit()
+            raise HTTPException(404, "Payer requirement version not found")
+        policy = dict(policy_row)
+        configured = json.loads(policy.get("specific_evidence_requirements") or "[]") or json.loads(policy.get("required_documents") or "[]")
+        if not isinstance(configured, list) or any(not isinstance(item, str) for item in configured):
+            raise HTTPException(409, "Stored policy criteria are invalid; policy remains unverified")
+        expected = {item.strip() for item in configured if item.strip()}
+        supplied = [item.model_dump() for item in payload.requirement_evidence]
+        supplied_names = [item["requirement"].strip() for item in supplied]
+        supplied_set = set(supplied_names)
+        if not expected or supplied_set != expected or len(supplied_names) != len(supplied_set):
+            status = "INCOMPLETE_CRITERION_EVIDENCE"
+            _source_attempt_audit(db, requirement_id, version, user["username"], now, status, "Source evidence must be supplied exactly once for every stored criterion.")
+            db.commit()
+            raise HTTPException(422, "Source evidence is required for every stored evidence requirement")
+        parsed = urlsplit(payload.source_url)
+        trusted_host = bool(parsed.hostname and _policy_source_host_allowed(parsed.hostname))
+        source_matches_record = payload.source_url == (policy.get("source_reference") or "")
+        unsupported_attestations = [
+            item for item in supplied
+            if "no supporting language found" in item["supporting_excerpt"].casefold()
+            or "not supported by this source" in item["supporting_excerpt"].casefold()
+        ]
+        if not trusted_host or not source_matches_record:
+            attempt_status = "UNTRUSTED_SOURCE"
+            criterion_results = [{**item, "criterion_status": "REVIEW_REQUIRED"} for item in supplied]
+            source_status = "SOURCE_REJECTED"
+            source_hash = None
+            detail = "The source host is not trusted or differs from the policy's stored source reference."
+            response_detail = "Source URL is not an approved authoritative source for this policy; policy remains unverified."
+        elif unsupported_attestations:
+            attempt_status = "UNSUPPORTED_CRITERIA"
+            criterion_results = [{**item, "criterion_status": "UNSUPPORTED" if item in unsupported_attestations else "REVIEW_REQUIRED"} for item in supplied]
+            source_status = "SOURCE_REVIEWED_BY_REQUESTER"
+            source_hash = None
+            detail = "The submitted review identifies criteria as unsupported; no policy approval was made."
+            response_detail = "The cited source does not substantiate one or more proposed criteria; policy remains unverified."
+        elif not payload.requirements_checked_against_source:
+            attempt_status = "REVIEW_REQUIRED"
+            criterion_results = [{**item, "criterion_status": "REVIEW_REQUIRED"} for item in supplied]
+            source_status = "NOT_CHECKED"
+            source_hash = None
+            detail = "The request did not attest that each criterion was checked against the source."
+            response_detail = "Every criterion must be reviewed against the source; policy remains unverified."
+        else:
+            try:
+                source_text, source_hash = _fetch_policy_source(payload.source_url)
+            except (ValueError, RuntimeError) as error:
+                attempt_status = "SOURCE_UNAVAILABLE"
+                criterion_results = [{**item, "criterion_status": "SOURCE_UNAVAILABLE"} for item in supplied]
+                source_status = "SOURCE_UNAVAILABLE"
+                source_hash = None
+                detail = str(error)
+                response_detail = "The authoritative source could not be retrieved and checked; policy remains unverified."
+            else:
+                normalize = lambda value: re.sub(r"\s+", " ", value).strip().casefold()
+                criterion_results = [
+                    {**item, "criterion_status": "SOURCE_SUPPORTED_PENDING_HUMAN" if normalize(item["supporting_excerpt"]) in normalize(source_text) else "REVIEW_REQUIRED"}
+                    for item in supplied
+                ]
+                supported = all(item["criterion_status"] == "SOURCE_SUPPORTED_PENDING_HUMAN" for item in criterion_results)
+                attempt_status = "SOURCE_MATCH_PENDING_HUMAN" if supported else "REVIEW_REQUIRED"
+                source_status = "SOURCE_AVAILABLE"
+                detail = "Retrieved source text was checked for exact excerpt matches; human policy approval is still required."
+                response_detail = "Source text was retrieved, but every criterion needs exact source support before human approval."
+        db.execute(
+            "INSERT INTO policy_source_verification_attempts(policy_id,policy_version,attempted_at,attempted_by,source_url,authoritative_title,authoritative_version,source_effective_date,source_status,attempt_status,source_sha256,criteria_json,verification_note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (requirement_id, version, now, user["username"], payload.source_url, payload.authoritative_title, payload.authoritative_version, payload.source_effective_date, source_status, attempt_status, source_hash, json.dumps(criterion_results, sort_keys=True), payload.verification_note.strip()),
+        )
+        _source_attempt_audit(db, requirement_id, version, user["username"], now, attempt_status, detail)
+    if attempt_status == "UNSUPPORTED_CRITERIA":
+        raise HTTPException(422, response_detail)
+    if attempt_status == "INCOMPLETE_CRITERION_EVIDENCE":
+        raise HTTPException(422, response_detail)
+    if attempt_status in {"UNTRUSTED_SOURCE", "REVIEW_REQUIRED"}:
+        raise HTTPException(422, response_detail)
+    if attempt_status == "SOURCE_UNAVAILABLE":
+        raise HTTPException(503, response_detail)
+    return {
+        "policy_id": requirement_id,
+        "version": version,
+        "verification_status": policy.get("verification_status") or "MOCK_DEMO",
+        "attempt_status": attempt_status,
+        "human_approval_required": True,
+        "criteria": criterion_results,
+        "message": "Source matching is advisory. A manager must review and approve this policy version before it becomes VERIFIED_PUBLIC.",
+    }
+
+
+@app.post("/api/payer-requirements/{requirement_id}/{version}/approve-source")
+def approve_requirement_source(requirement_id: str, version: str, payload: SourceVerificationApproval, user: dict = Depends(current_user)) -> dict:
+    if user["role"] not in {"ADMIN", "MANAGER"}:
+        raise HTTPException(403, "A manager or policy administrator must approve source verification")
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as db:
+        policy = db.execute("SELECT * FROM policy_documents WHERE policy_id=? AND version=?", (requirement_id, version)).fetchone()
+        if not policy:
+            raise HTTPException(404, "Payer requirement version not found")
+        attempt = db.execute("SELECT * FROM policy_source_verification_attempts WHERE policy_id=? AND policy_version=? ORDER BY id DESC LIMIT 1", (requirement_id, version)).fetchone()
+        if not attempt or attempt["attempt_status"] != "SOURCE_MATCH_PENDING_HUMAN" or attempt["source_status"] != "SOURCE_AVAILABLE" or not attempt["source_sha256"]:
+            raise HTTPException(409, "A complete source-match attempt is required before human policy approval")
+        criteria = json.loads(attempt["criteria_json"])
+        if not criteria or any(item.get("criterion_status") != "SOURCE_SUPPORTED_PENDING_HUMAN" for item in criteria):
+            raise HTTPException(409, "Every criterion must have exact source support before approval")
+        if attempt["source_url"] != policy["source_reference"]:
+            raise HTTPException(409, "Policy source changed after verification; start a new source review")
+        for item in criteria:
+            criterion_id = "CR-" + hashlib.sha256(f"{requirement_id}|{version}|{item['requirement']}".encode()).hexdigest()[:20]
+            db.execute(
+                "INSERT INTO policy_criteria(policy_id,policy_version,criterion_id,criterion_text,service_scope,source_url,source_version,supporting_excerpt,source_locator,verification_status,verification_notes,verified_by,verified_at) VALUES(?,?,?,?,?,?,?,?,?,'VERIFIED_PUBLIC',?,?,?) ON CONFLICT(policy_id,policy_version,criterion_id) DO UPDATE SET criterion_text=excluded.criterion_text,service_scope=excluded.service_scope,source_url=excluded.source_url,source_version=excluded.source_version,supporting_excerpt=excluded.supporting_excerpt,source_locator=excluded.source_locator,verification_status=excluded.verification_status,verification_notes=excluded.verification_notes,verified_by=excluded.verified_by,verified_at=excluded.verified_at",
+                (requirement_id, version, criterion_id, item["requirement"], policy["service_type"], attempt["source_url"], attempt["authoritative_version"], item["supporting_excerpt"], item["source_location"], payload.reason.strip(), user["username"], now),
+            )
+        db.execute(
+            "UPDATE policy_documents SET approved=1,verification_status='VERIFIED_PUBLIC',source_url=?,authoritative_title=?,authoritative_version=?,source_verified_by=?,source_verified_at=?,source_verification_note=?,source_requirement_evidence=? WHERE policy_id=? AND version=?",
+            (attempt["source_url"], attempt["authoritative_title"], attempt["authoritative_version"], user["username"], now, payload.reason.strip(), attempt["criteria_json"], requirement_id, version),
+        )
+        db.execute("INSERT INTO audit_events(case_id,timestamp,actor,action,detail,decision_type) VALUES('SYSTEM',?,?,?,?,?)", (now, user["username"], "PAYER_POLICY_VERIFICATION_APPROVED", json.dumps({"policy_id": requirement_id, "version": version, "attempt_id": attempt["id"], "criterion_count": len(criteria), "reason": payload.reason.strip()}, sort_keys=True), "HUMAN_POLICY_REVIEW"))
+    return {"policy_id": requirement_id, "version": version, "verification_status": "VERIFIED_PUBLIC", "verified_by": user["username"], "verified_at": now, "criterion_count": len(criteria)}
 
 @app.post("/api/payer-requirements")
 def create_payer_requirement(payload: RequirementCreate) -> dict:
@@ -989,7 +1684,7 @@ def create_payer_requirement(payload: RequirementCreate) -> dict:
         if db.execute("SELECT id FROM policy_documents WHERE policy_id=? AND version=?",(values["requirement_id"],values["version"])).fetchone():
             raise HTTPException(409,"Requirement ID and version already exist")
         db.execute("INSERT INTO policy_documents(policy_id,document_type,title,content,effective_date,expires_at,version,approved,payer,service_type,source_reference,required_documents) VALUES(?,?,?,?,?,?,?,0,?,?,?,?)",(values["requirement_id"],values["document_type"],values["title"],values["content"],values["effective_date"],values["expires_at"],values["version"],values["payer"],values["service_type"],values["source_reference"],json.dumps(documents)))
-        result=dict(db.execute("SELECT policy_id AS requirement_id,document_type,title,content,effective_date,expires_at,version,approved,embedding_engine,payer,service_type,source_reference,required_documents FROM policy_documents WHERE policy_id=? AND version=?",(values["requirement_id"],values["version"])).fetchone())
+        result=dict(db.execute("SELECT policy_id AS requirement_id,document_type,title,content,effective_date,expires_at,version,approved,embedding_engine,payer,service_type,source_reference,required_documents,verification_status FROM policy_documents WHERE policy_id=? AND version=?",(values["requirement_id"],values["version"])).fetchone())
     audit("SYSTEM","Current user","PAYER_REQUIREMENT_CREATED",f"Created draft {values['requirement_id']} v{values['version']} for {values['payer']} / {values['service_type']}.","HUMAN_OPERATIONAL_DECISION")
     return result
 @app.get("/api/role-assignments/history")

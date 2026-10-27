@@ -77,6 +77,7 @@ _SYNTHETIC_EXAMPLES = (
 )
 
 _PREDICTION_LABELS = {"NOT_PREDICTED_MISSING", "PREDICTED_MISSING"}
+EVIDENCE_MODEL_VERSION = "tfidf-logistic-synthetic-examples-v1"
 
 
 def _feature_text(
@@ -134,7 +135,7 @@ def predict_evidence_gaps(
     documents: object,
     evidence_finding: object,
 ) -> dict:
-    """Predict possible evidence gaps without replacing deterministic verification."""
+    """Predict possible evidence gaps without replacing deterministic verification or clinical validation."""
     required = _validated_string_list(required_documents, "required_documents")
     if not isinstance(documents, list) or any(not isinstance(item, Mapping) for item in documents):
         raise ValueError("documents must be a list of document records.")
@@ -146,6 +147,7 @@ def predict_evidence_gaps(
         "validated": False,
         "training_data_source": "Synthetic examples only; no labelled real-world dataset.",
         "model_name": "TF-IDF + Logistic Regression",
+        "model_version": EVIDENCE_MODEL_VERSION,
     }
     if not required:
         return {
@@ -181,7 +183,8 @@ def predict_evidence_gaps(
     else:
         message = (
             "Experimental predictions use synthetic training examples and are not "
-            "clinically or operationally validated."
+            "clinically or operationally validated. ML prediction does not constitute "
+            "clinical evidence verification."
         )
 
     found_labels = {
@@ -196,6 +199,13 @@ def predict_evidence_gaps(
     }
     missing_labels = set(evidence_finding.get("missing_documents", []))
 
+    # Structured requirement validations from evidence finding (SATISFIED, MISSING, UNCERTAIN, CONFLICTING)
+    finding_validations = {
+        v.get("requirement"): v.get("validation_status")
+        for v in evidence_finding.get("evidence_validations", [])
+        if isinstance(v, Mapping) and v.get("requirement")
+    }
+
     results = []
     model = None
     model_error = None
@@ -209,6 +219,7 @@ def predict_evidence_gaps(
         if verification_unavailable:
             verification_status = "UNKNOWN"
             prediction = "UNKNOWN"
+            validation_status = "UNCERTAIN"
         else:
             if label in found_labels:
                 verification_status = "FOUND_IN_TEXT"
@@ -218,6 +229,14 @@ def predict_evidence_gaps(
                 verification_status = "VERIFIED_MISSING"
             else:
                 verification_status = "NEEDS_REVIEW"
+
+            # Deterministic evidence validation status (never overridden by ML prediction)
+            if label in finding_validations:
+                validation_status = finding_validations[label]
+            elif verification_status == "VERIFIED_MISSING":
+                validation_status = "MISSING"
+            else:
+                validation_status = "UNCERTAIN"
 
             if model is None:
                 prediction = "UNKNOWN"
@@ -236,6 +255,7 @@ def predict_evidence_gaps(
                 "required_document": label,
                 "ml_prediction": prediction,
                 "verification_status": verification_status,
+                "validation_status": validation_status,
             }
         )
 

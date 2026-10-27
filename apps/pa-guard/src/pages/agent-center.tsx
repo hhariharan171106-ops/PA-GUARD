@@ -13,8 +13,10 @@ type AgentMessage = {
   id: string;
   speaker: string;
   body: string;
+  reasoning?: string;
   notes: string[];
   status: 'advisory' | 'review';
+  syntheticModel?: boolean;
   followUp?: { label: string; to: string };
 };
 
@@ -25,7 +27,7 @@ type ChatMessage =
 const nowLabel = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 function explanationSource(engine?: string) {
-  if (engine === 'not_run') return 'A language-model explanation was skipped because policy coverage needs human review.';
+  if (engine === 'not_run') return 'A language-model explanation was not generated for this result.';
   if (engine?.startsWith('ollama:')) return `Plain-language explanation from local ${engine.slice('ollama:'.length)}.`;
   return 'The local language model was unavailable; this wording uses a deterministic fallback.';
 }
@@ -34,7 +36,8 @@ function recommendationMessage(caseId: string, item: SlaRecommendation): AgentMe
   return {
     id: `sla-${caseId}-${Date.now()}`,
     speaker: 'SLA Operations Agent',
-    body: `${item.explanation} ${item.recommendedAction}`,
+    body: `Recommended action: ${item.recommendedAction}`,
+    reasoning: item.explanation,
     notes: [
       `Rule-based SLA status: ${item.riskLevel.replaceAll('_', ' ')} · ${
         item.riskLevel === 'BREACHED'
@@ -137,7 +140,8 @@ export default function AgentCenterPage() {
         addAgentMessage({
           id: `evidence-${caseId}-${Date.now()}`,
           speaker: 'Evidence Review Agent',
-          body: `${finding.explanation} This is a document-matching report, not clinical verification. An unreadable or unprocessed document is not being treated as missing.`,
+          body: `${finding.recommendedAction} This is a document-matching report, not clinical verification. An unreadable or unprocessed document is not being treated as missing.`,
+          reasoning: finding.explanation,
           notes,
           status: 'review',
           followUp: { label: 'Review evidence', to: `/evidence?caseId=${encodeURIComponent(caseId)}` },
@@ -149,7 +153,8 @@ export default function AgentCenterPage() {
         addAgentMessage({
           id: `escalation-${caseId}-${Date.now()}`,
           speaker: 'Escalation Agent',
-          body: `${decision.reason} ${decision.recommendedAction}`,
+          body: `Recommended action: ${decision.recommendedAction}`,
+          reasoning: decision.reason,
           notes: [
             explanationSource(decision.explanationEngine),
             `Escalation level: ${decision.escalationLevel.replaceAll('_', ' ')}`,
@@ -179,7 +184,7 @@ export default function AgentCenterPage() {
           id: `risk-${caseId}-${Date.now()}`,
           speaker: 'SLA Risk Model',
           body: prediction.available
-            ? `The model estimates ${prediction.riskLevel.toLowerCase()} operational risk (${prediction.riskScore}/100). ${prediction.scoreMeaning}`
+            ? `The synthetic model estimates ${prediction.riskLevel.toLowerCase()} operational risk (${prediction.riskScore}/100) and a ${(100 * (prediction.breachProbability ?? 0)).toFixed(1)}% simulated breach probability (${prediction.predictedSlaBreach ? 'breach predicted' : 'no breach predicted'}). ${prediction.scoreMeaning}`
             : 'The SLA risk model is currently unavailable for this case.',
           notes: [
             prediction.reliabilityNote,
@@ -187,6 +192,7 @@ export default function AgentCenterPage() {
             ...prediction.factors.slice(0, 3).map((factor) => `${factor.factor}: ${factor.description}`),
           ],
           status: 'advisory',
+          syntheticModel: prediction.available,
           followUp: { label: 'Open case', to: `/cases/${encodeURIComponent(caseId)}` },
         });
       });
@@ -208,7 +214,8 @@ export default function AgentCenterPage() {
         addAgentMessage({
           id: `recovery-${caseId}-${Date.now()}`,
           speaker: 'Recovery Agent',
-          body: decision.narrative ?? `The recorded issue is ${decision.failureType.replaceAll('_', ' ').toLowerCase()}. ${decision.likelyCause} Suggested next step: ${decision.recommendedRecovery} No recovery action was taken.`,
+          body: `Recommended recovery: ${decision.recommendedRecovery} No recovery action was taken.`,
+          reasoning: decision.narrative,
           notes: [
             `Recovery status: ${decision.recoveryStatus.replaceAll('_', ' ')}`,
             explanationSource(decision.explanationEngine),
@@ -229,13 +236,13 @@ export default function AgentCenterPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold"><MessageSquareText className="size-6" />Agent conversation</h1>
-          <p className="text-sm text-muted-foreground">Readable, case-by-case briefings from PA Guard agents with human follow-up links.</p>
+      <p className="text-sm text-muted-foreground">Short case reviews with links for staff follow-up.</p>
         </div>
-        <Badge variant="outline"><Bot className="mr-1 size-3" />{agentStatus?.ollama.status === 'ready' ? agentStatus.ollama.model : 'Local LLM status'}</Badge>
+        <Badge variant="outline"><Bot className="mr-1 size-3" />{agentStatus?.ollama.status === 'ready' ? 'AI explanations available' : agentStatus?.ollama.status === 'model_missing' ? 'AI model not installed' : 'AI explanations unavailable'}</Badge>
       </div>
 
       <div className="rounded-md border border-amber-500/40 bg-amber-50 p-3 text-sm text-amber-950 dark:bg-amber-950/20 dark:text-amber-100">
-        <strong>Human decision required.</strong> Agent messages are recommendations, not clinical verification or authorization decisions. The risk model is experimental and trained on synthetic data. No approval, denial, submission, or recovery action is triggered by this briefing.
+            <strong>A person must make the decision.</strong> Agent messages are recommendations. They do not verify clinical evidence or decide whether a case is authorized. The risk estimate is experimental and uses synthetic data. This briefing does not approve, deny, submit, or recover a case.
       </div>
 
       <Card>
@@ -251,10 +258,10 @@ export default function AgentCenterPage() {
           </Select>
           <Button onClick={() => void runBriefing()} disabled={!caseId || isRunning || isOfflineDemo || agentStatus?.api_status !== 'ready'}>
             <Play className={isRunning ? 'size-4 animate-pulse' : 'size-4'} />
-            {isRunning ? 'Agents are preparing reports…' : 'Ask agents for a briefing'}
+            {isRunning ? 'Preparing case review…' : 'Prepare case review'}
           </Button>
         </CardContent>
-        {(isOfflineDemo || agentStatus?.api_status !== 'ready') && <p className="px-6 pb-4 text-sm text-muted-foreground">FastAPI must be connected before live agents can review a case. No sample JSON is shown in chat.</p>}
+        {(isOfflineDemo || agentStatus?.api_status !== 'ready') && <p className="px-6 pb-4 text-sm text-muted-foreground">Connect to the PA Guard service to review a case. No sample results are shown while offline.</p>}
         {isLoading && <p className="px-6 pb-4 text-sm text-muted-foreground">Loading cases from PA Guard…</p>}
         {!isLoading && !activeCases.length && !isOfflineDemo && <p className="px-6 pb-4 text-sm text-muted-foreground">There are no active cases to review.</p>}
       </Card>
@@ -262,14 +269,13 @@ export default function AgentCenterPage() {
       <Card>
         <CardContent className="space-y-1 p-4 text-sm">
           <p>
-            <strong>FastAPI:</strong> {agentStatus?.api_status === 'ready' ? 'connected' : agentStatusError ? 'unavailable' : 'checking…'}
-            {' · '}<strong>LangGraph:</strong> {agentStatus?.agents
-              ? `SLA, evidence, escalation, and recovery agents are ${Object.values(agentStatus.agents).every((status) => status === 'ready') ? 'ready' : 'partially unavailable'}.`
-              : 'checking agent routes…'}
+            <strong>PA Guard service:</strong> {agentStatus?.api_status === 'ready' ? 'connected' : agentStatusError ? 'unavailable' : 'checking…'}
+            {' · '}<strong>Case review tools:</strong> {agentStatus?.agents
+              ? Object.values(agentStatus.agents).every((status) => status === 'ready') ? 'available' : 'some tools are unavailable'
+              : 'checking availability…'}
           </p>
           <p className={agentStatus?.ollama.status === 'ready' ? 'text-muted-foreground' : 'text-amber-700 dark:text-amber-300'}>
-            <strong>Local LLM:</strong> {agentStatus?.ollama.message ?? agentStatusError ?? 'Checking Ollama and the configured model…'}
-            {agentStatus?.ollama.status === 'ready' && ` (${agentStatus.ollama.model})`}
+            <strong>AI explanation service:</strong> {agentStatus?.ollama.status === 'ready' ? 'Ready. Case reviews can include a plain-language AI explanation.' : agentStatus?.ollama.status === 'model_missing' ? 'The service is running, but its configured model is not installed. Ask an administrator to install it. Case review facts remain available.' : agentStatus?.ollama.status === 'unavailable' ? 'Temporarily unavailable. Case review facts remain available without the AI explanation.' : agentStatusError ?? 'Checking availability…'}
           </p>
           {agentStatusError && <p role="alert" className="text-destructive">{agentStatusError}</p>}
         </CardContent>
@@ -298,11 +304,17 @@ export default function AgentCenterPage() {
               <span className="grid size-8 shrink-0 place-items-center rounded-full bg-secondary text-secondary-foreground"><Bot className="size-4" /></span>
               <div className="min-w-0 flex-1 space-y-3 rounded-2xl rounded-tl-sm border bg-card p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="font-semibold">{message.speaker}</h2>
+                  <div className="flex items-center gap-2"><h2 className="font-semibold">{message.speaker}</h2>{message.syntheticModel && <Badge variant="outline">Synthetic model</Badge>}</div>
                   <Badge variant={message.status === 'review' ? 'destructive' : 'secondary'}>
                     {message.status === 'review' ? <><AlertTriangle className="mr-1 size-3" />Human review requested</> : 'Advisory only'}
                   </Badge>
                 </div>
+                {message.reasoning && (
+                  <div className="rounded-md bg-muted/50 p-3">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent rationale</p>
+                    <p className="text-sm leading-6">{message.reasoning}</p>
+                  </div>
+                )}
                 <p className="whitespace-pre-wrap text-sm leading-6">{message.body}</p>
                 {message.notes.length > 0 && <ul className="space-y-1 border-l-2 pl-3 text-sm text-muted-foreground">{message.notes.map((note, index) => <li key={`${message.id}-note-${index}`}>{note}</li>)}</ul>}
                 <div className="flex flex-wrap items-center gap-2 border-t pt-3">

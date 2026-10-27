@@ -21,7 +21,18 @@ import SettingsPage from '@/pages/settings';
 import AuditPage from '@/pages/audit';
 import PoliciesPage from '@/pages/policies';
 import PayerRequirementsPage from '@/pages/payer-requirements';
+import ApprovalsPage from '@/pages/approvals';
+import StaffManagementPage from '@/pages/staff-management';
+import CaseAllocationPage from '@/pages/case-allocation';
+import SubmissionReviewPage from '@/pages/submission-review';
 import { PaProvider } from '@/lib/pa-context';
+import LoginPage from '@/pages/login';
+import ProtectedRoute from '@/components/protected-route';
+import { AuthProvider } from '@/lib/auth-context';
+
+function AuthenticatedLayout() {
+  return <PaProvider><Layout /></PaProvider>;
+}
 
 function App() {
   useEffect(() => {
@@ -34,13 +45,16 @@ function App() {
       <ErrorBoundary resetQueryCache>
         <JotaiProvider>
           <Toaster richColors />
-          <PaProvider>
-            <Router>
+          <Router>
+            <AuthProvider>
               <Routes>
-                <Route path="/" element={<Layout />}>
+                <Route path="/login" element={<LoginPage />} />
+                <Route element={<ProtectedRoute />}>
+                <Route path="/" element={<AuthenticatedLayout />}>
                   <Route index element={<HomePage />} />
                   <Route path="cases" element={<CasesPage />} />
                   <Route path="cases/:id" element={<CaseDetailsPage />} />
+                  <Route path="cases/:id/submission-review" element={<SubmissionReviewPage />} />
                   <Route path="agent-center" element={<AgentCenterPage />} />
                   <Route path="evidence" element={<EvidencePage />} />
                   <Route path="escalation-policies" element={<EscalationPoliciesPage />} />
@@ -49,11 +63,15 @@ function App() {
                   <Route path="policies" element={<PoliciesPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                   <Route path="audit" element={<AuditPage />} />
+                  <Route path="approvals" element={<ApprovalsPage />} />
+                  <Route path="staff-management" element={<StaffManagementPage />} />
+                  <Route path="case-allocation" element={<CaseAllocationPage />} />
                   <Route path="*" element={<NotFoundPage />} />
                 </Route>
+                </Route>
               </Routes>
-            </Router>
-          </PaProvider>
+            </AuthProvider>
+          </Router>
         </JotaiProvider>
       </ErrorBoundary>
     </QueryClientProvider>

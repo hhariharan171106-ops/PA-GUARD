@@ -4,6 +4,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from case_deadline import parse_case_deadline
 from database import connect
 from rag import explain_with_ollama, retrieve_policies, source_references, validate_policies
 
@@ -50,9 +51,7 @@ def calculate_rules(state: SlaRagState) -> dict:
     case = state["case"]
     settings = state["settings"]
     now = datetime.fromisoformat(state["now"])
-    deadline = datetime.fromisoformat(case["deadline"])
-    if deadline.tzinfo is None:
-        deadline = deadline.replace(tzinfo=timezone.utc)
+    deadline = parse_case_deadline(case["deadline"])
     hours = round((deadline - now).total_seconds() / 3600, 1)
     gaps = [item for item in state["documents"] if item["status"] != "VERIFIED"]
     references = source_references(state["policies"])
@@ -77,8 +76,6 @@ def calculate_rules(state: SlaRagState) -> dict:
 
 
 def explain(state: SlaRagState) -> dict:
-    if not state["policy_valid"]:
-        return {"explanation_engine": "not_run"}
     explanation, engine = explain_with_ollama(state["result"])
     result = {**state["result"], "explanation": explanation}
     return {"result": result, "explanation_engine": engine}

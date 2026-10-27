@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import pickle
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -233,6 +234,9 @@ class SlaRiskModel:
             "reliability_note": SYNTHETIC_DATA_NOTICE,
             "explanation": explanation,
             "training_data_source": MODEL_VERSION,
+            "evaluation_provenance": "Synthetic simulator artifacts only; no representative real-world outcomes were used.",
+            "prediction_timestamp": datetime.now(timezone.utc).isoformat(),
+            "decision_scope": "Advisory estimate only; not a clinical, authorization, or payer-submission decision.",
         }
 
 _default_model = SlaRiskModel()

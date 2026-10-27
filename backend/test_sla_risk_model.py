@@ -11,7 +11,9 @@ import joblib
 from fastapi.testclient import TestClient
 
 import database
+import approval_api
 import main
+import security
 from sla_risk_model import (
     FEATURE_NAMES,
     InvalidRiskFeatures,
@@ -411,6 +413,8 @@ class SlaRiskApiTests(unittest.TestCase):
 
         self.stack.enter_context(patch.object(database, "connect", closing_connect))
         self.stack.enter_context(patch.object(main, "connect", closing_connect))
+        self.stack.enter_context(patch.object(approval_api, "connect", closing_connect))
+        self.stack.enter_context(patch.object(security, "connect", closing_connect))
         model = SlaRiskModel(
             create_test_v2_artifact(temporary_root / "risk-model.joblib")
         )
@@ -418,6 +422,14 @@ class SlaRiskApiTests(unittest.TestCase):
         self.stack.enter_context(patch.object(main, "predict_sla_breach_risk", model.predict))
         self.stack.enter_context(patch.object(main, "index_policies", lambda: {"indexed": 0}))
         self.client = self.stack.enter_context(TestClient(main.app))
+        login = self.client.post(
+            "/api/auth/login",
+            json={"username": "manager", "password": "ManagerDemo1"},
+        )
+        if login.status_code != 200:
+            self.stack.close()
+            self.fail(f"Could not authenticate test manager: {login.text}")
+        self.client.headers.update({"Authorization": f"Bearer {login.json()['token']}"})
         self.addCleanup(self.stack.close)
 
     def test_case_prediction_endpoint_uses_case_data(self) -> None:
@@ -500,6 +512,14 @@ class SlaRiskApiTests(unittest.TestCase):
     def test_case_prediction_endpoint_returns_404_for_unknown_case(self) -> None:
         response = self.client.get("/api/cases/PA-DOES-NOT-EXIST/sla-risk-prediction")
         self.assertEqual(response.status_code, 404)
+
+    def test_synthetic_model_card_endpoint_is_explicitly_unvalidated(self) -> None:
+        response = self.client.get("/api/sla-risk-model-card")
+        self.assertEqual(response.status_code, 200, response.text)
+        card = response.json()
+        self.assertFalse(card["real_world_validation"])
+        self.assertIn("NOT VALIDATED ON REAL OUTCOMES", card["prominent_notice"])
+        self.assertEqual(card["data_source"], "Synthetic simulator only; no real authorization outcomes.")
 
 
 if __name__ == "__main__":
